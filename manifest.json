@@ -12,6 +12,7 @@
   "optional_dependencies": [],
   "conflicts": [],
   "incompatible": [],
+  "github": "1Jamie/omni_ui",
   "permissions": ["engine_internals"],
   "games": ["all"],
   "experimental": false,
