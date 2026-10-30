@@ -1,0 +1,19 @@
+{
+  "id": "omni_ui",
+  "name": "OmniUI",
+  "version": "0.1.0",
+  "api": 2,
+  "entry": "main.lua",
+  "profile": "overhaul",
+  "game_version": ">=0.0.0-dev <1.0.0",
+  "category": "UI",
+  "priority": 100,
+  "dependencies": [],
+  "optional_dependencies": [],
+  "conflicts": [],
+  "incompatible": [],
+  "permissions": ["engine_internals"],
+  "games": ["all"],
+  "experimental": false,
+  "description": "Unified Modern UI Framework with cross-generation parity (Gen 1-3) and modular mod support."
+}
