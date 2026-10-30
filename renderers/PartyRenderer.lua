@@ -45,6 +45,123 @@ local function getExpRatio(mon, def)
   return 0.0
 end
 
+local function promptLines(value)
+  if type(value) == "table" then
+    local lines = {}
+    for i = 1, #value do
+      local row = value[i]
+      if type(row) == "table" then
+        lines[#lines + 1] = tostring(row.s or row.text or row[1] or "")
+      else
+        lines[#lines + 1] = tostring(row)
+      end
+    end
+    if #lines > 0 then return lines end
+  end
+  local text = tostring(value or "")
+  text = text:gsub("\f", "\n")
+  local lines = {}
+  for line in (text .. "\n"):gmatch("(.-)\n") do
+    if line ~= "" then lines[#lines + 1] = line end
+  end
+  if #lines == 0 and text ~= "" then lines[1] = text end
+  return lines
+end
+
+local function yesNoLabels(state)
+  local stored = state and state._yesNoLabels
+  if type(stored) == "table" and stored[1] and stored[2] then
+    return stored
+  end
+  local ok, labels = pcall(function()
+    local Profile = require("src.core.game3.profile")
+    local session = state and state._session
+    local row = Profile.forSession(session)
+    local party = row and row.ui and row.ui.party
+    if type(party) == "string" then party = require(party) end
+    if party and party.yesNoLabels then return party.yesNoLabels() end
+    return nil
+  end)
+  if ok and type(labels) == "table" and labels[1] and labels[2] then
+    return labels
+  end
+  return { "YES", "NO" }
+end
+
+local function isPromptText(screen, partyState)
+  if not screen or screen == partyState then return false end
+  if screen.isTextBox or screen.isGame3Message or screen.shownSource then return true end
+  if screen.pages and screen.pageIndex then return true end
+  if screen._pages and screen._page then return true end
+  return false
+end
+
+local function isPromptChoice(screen, partyState)
+  if not screen or screen == partyState then return false end
+  if screen.isChoiceBox then return true end
+  if screen.onChoose and (screen.labels or screen.options or screen.choices) then return true end
+  local sid = screen.screenId or screen.id
+  if sid == "ChoiceBox" or sid == "Gen2ChoiceBox" or sid == "Game3Choice" or sid == "Choice" then
+    return true
+  end
+  return false
+end
+
+local function layeredPrompt(game, partyState, subState)
+  local textState, choiceState
+  local function consider(screen)
+    if isPromptText(screen, partyState) then textState = screen end
+    if isPromptChoice(screen, partyState) then choiceState = screen end
+  end
+  consider(subState)
+  local states = game and game.stack and game.stack.states
+  if type(states) ~= "table" then return textState, choiceState end
+  local partyIndex
+  for i = #states, 1, -1 do
+    if states[i] == partyState then
+      partyIndex = i
+      break
+    end
+  end
+  if not partyIndex then return textState, choiceState end
+  for i = partyIndex + 1, #states do
+    consider(states[i])
+  end
+  return textState, choiceState
+end
+
+local function drawFieldPrompt(game, state, w, h, theme, subState)
+  if not state then return end
+  local DialogueRenderer = require("mods.omni_ui.renderers.DialogueRenderer")
+  if state.mode == "yesno" or state.mode == "message" then
+    local raw = (state.mode == "yesno") and state._yesNoPrompt or state._messageText
+    local lines = promptLines(raw)
+    if #lines == 0 then return end
+    local spoken = {
+      pages = { { table.concat(lines, "\n") } },
+      pageIndex = 1,
+      lineIndex = 2,
+      charIndex = 9999,
+      instant = true,
+      waiting = state.mode == "message",
+    }
+    local choice
+    if state.mode == "yesno" then
+      choice = {
+        isChoiceBox = true,
+        labels = yesNoLabels(state),
+        index = state._yesNoCursor or 1,
+      }
+    end
+    DialogueRenderer.draw(game, spoken, w, h, theme, choice)
+    return
+  end
+
+  local textState, choiceState = layeredPrompt(game, state, subState)
+  if not (textState or choiceState) then return end
+  DialogueRenderer.draw(game, textState or { text = "", instant = true }, w, h, theme, choiceState)
+end
+
 function PartyRenderer.draw(game, state, w, h, theme, subState, animProgress)
   local AdapterResolver = require("mods.omni_ui.adapters.AdapterResolver")
   local adapter = AdapterResolver.resolve(game)
@@ -616,6 +733,14 @@ function PartyRenderer.draw(game, state, w, h, theme, subState, animProgress)
       })
     end
   end
+
+  -- Field-move confirms (Teleport, Dig, Cut, and the rest) and the refusal
+  -- lines that share their box. Gen 3 keeps the question on the party menu
+  -- itself (`mode == "yesno"` / `"message"`). Gen 1 and Gen 2 push a text
+  -- box, sometimes with a Yes/No choice, on top of this menu. The overlay
+  -- hides those native windows, so the prompt has to be drawn here. Input
+  -- stays with the menu or the box that was pushed.
+  drawFieldPrompt(game, state, w, h, theme, subState)
 end
 
 return PartyRenderer

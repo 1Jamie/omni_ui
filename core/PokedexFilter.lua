@@ -280,7 +280,7 @@ function PokedexFilter.buildRows(game, state, adapter, opts)
       baseList[#baseList + 1] = {
         origIdx = idx,
         regionalDex = idx,
-        nationalDex = r.dex or (entryData.dex or idx),
+        nationalDex = entryData.nationalDex or r.dex or entryData.dex or idx,
         species = spKey,
         speciesId = spKey,
         name = (entryData and entryData.name) or tostring(spKey),
@@ -304,7 +304,7 @@ function PokedexFilter.buildRows(game, state, adapter, opts)
       baseList[#baseList + 1] = {
         origIdx = idx,
         regionalDex = idx,
-        nationalDex = entryData.dex or idx,
+        nationalDex = entryData.nationalDex or entryData.dex or idx,
         species = spKey,
         speciesId = spKey,
         name = (entryData and entryData.name) or tostring(spKey),
@@ -350,7 +350,7 @@ function PokedexFilter.buildRows(game, state, adapter, opts)
       baseList[#baseList + 1] = {
         origIdx = idx,
         regionalDex = idx,
-        nationalDex = entryData.dex or idx,
+        nationalDex = entryData.nationalDex or entryData.dex or idx,
         species = spKey,
         speciesId = spKey,
         name = (entryData and entryData.name) or tostring(spKey),

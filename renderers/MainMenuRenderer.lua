@@ -5,6 +5,7 @@
 local Layout = require("mods.omni_ui.core.Layout")
 local Theme = require("mods.omni_ui.core.Theme")
 local BaseAdapter = require("mods.omni_ui.adapters.BaseAdapter")
+local AdapterResolver = require("mods.omni_ui.adapters.AdapterResolver")
 
 local MainMenuRenderer = {}
 
@@ -23,182 +24,258 @@ local function resolveMonName(pMon)
   return tostring(nick or sp or "MON")
 end
 
-function MainMenuRenderer.draw(game, state, w, h, theme, subState)
-  local ctx = Layout.getContext(w, h)
-  local isNarrow = (w < 560) or ctx.isPortrait
-
-  -- 1. Identify Game Version & Title
+local function versionOf(game, state)
   local ver = (game and game.gameVersion) or (game and game.cart and game.cart.gameVersion)
+    or (state and state.gameVersion) or (state and state.version)
   if not ver then
     local okV, GV = pcall(require, "src.core.GameVersion")
     if okV and GV and GV.get then ver = GV.get() end
   end
-  ver = tostring(ver or "red"):lower()
-  local verTitle = "Pokémon Red"
-  if ver == "blue" then verTitle = "Pokémon Blue"
-  elseif ver == "yellow" then verTitle = "Pokémon Yellow"
-  elseif ver == "gold" then verTitle = "Pokémon Gold"
-  elseif ver == "silver" then verTitle = "Pokémon Silver"
-  elseif ver == "crystal" then verTitle = "Pokémon Crystal"
-  elseif ver == "firered" then verTitle = "Pokémon FireRed"
-  elseif ver == "leafgreen" then verTitle = "Pokémon LeafGreen"
-  elseif ver == "emerald" then verTitle = "Pokémon Emerald"
-  elseif ver == "ruby" then verTitle = "Pokémon Ruby"
-  elseif ver == "sapphire" then verTitle = "Pokémon Sapphire"
-  end
+  return tostring(ver or "red"):lower()
+end
 
-  -- 2. Extract Save Information
-  local save = (subState and subState.save) or state.save or state.saveInfo
-  if not save and state.continueInfo and state.continueInfo.save then
-    save = state.continueInfo.save
-  end
-  if not save and subState and subState.continueInfo and subState.continueInfo.save then
-    save = subState.continueInfo.save
-  end
-  if not save and state.__cachedSave then
-    save = state.__cachedSave
-  end
-  if not save and state.items and state.items.__omniSave then
-    save = state.items.__omniSave
-  end
-  if not save and state.list and state.list.items and state.list.items.__omniSave then
-    save = state.list.items.__omniSave
-  end
-  if not save and game and game.__omniTitleSave then
-    save = game.__omniTitleSave
-  end
-  if not save and game and game.save then
+local function generationOf(ver)
+  if ver == "gold" or ver == "silver" or ver == "crystal" then return 2 end
+  if ver == "firered" or ver == "leafgreen" or ver == "ruby" or ver == "sapphire" or ver == "emerald" then return 3 end
+  return 1
+end
+
+local function versionTitle(ver)
+  if ver == "blue" then return "Pokémon Blue" end
+  if ver == "yellow" then return "Pokémon Yellow" end
+  if ver == "gold" then return "Pokémon Gold" end
+  if ver == "silver" then return "Pokémon Silver" end
+  if ver == "crystal" then return "Pokémon Crystal" end
+  if ver == "firered" then return "Pokémon FireRed" end
+  if ver == "leafgreen" then return "Pokémon LeafGreen" end
+  if ver == "emerald" then return "Pokémon Emerald" end
+  if ver == "ruby" then return "Pokémon Ruby" end
+  if ver == "sapphire" then return "Pokémon Sapphire" end
+  return "Pokémon Red"
+end
+
+-- The title menu's continue panel. FRLG and RSE store a header (name, badges,
+-- dex, time) and keep the party on the save. GSC and RBY keep both on the save.
+local function looksLikeHeader(info)
+  return type(info) == "table" and (info.name or info.badges ~= nil or info.dexCount ~= nil or info.hours ~= nil)
+end
+
+local function headerOf(state, subState)
+  if looksLikeHeader(state and state.continueInfo) then return state.continueInfo end
+  if looksLikeHeader(subState and subState.continueInfo) then return subState.continueInfo end
+  if looksLikeHeader(state and state.info) then return state.info end
+  if looksLikeHeader(subState and subState.info) then return subState.info end
+  return nil
+end
+
+local function attachedSave(game, state, subState)
+  local save = (subState and subState.save) or (state and (state.save or state.saveInfo))
+  if not save and state and state.continueInfo and state.continueInfo.save then save = state.continueInfo.save end
+  if not save and subState and subState.continueInfo and subState.continueInfo.save then save = subState.continueInfo.save end
+  if not save and state and state.__cachedSave then save = state.__cachedSave end
+  if not save and state and state.items and state.items.__omniSave then save = state.items.__omniSave end
+  if not save and state and state.list and state.list.items and state.list.items.__omniSave then save = state.list.items.__omniSave end
+  if not save and game and game.__omniTitleSave then save = game.__omniTitleSave end
+  if not save and state and state.giftSave then save = state.giftSave end
+  if not save and game and game.save and (game.save.party or game.save.player or game.save.playerName or game.save.name) then
     save = game.save
   end
-
   if not save and game and game.stack and game.stack.states then
     for _, s in ipairs(game.stack.states) do
-      if s.save and type(s.save) == "table" and s.save ~= (game and game.save) then
+      if s.save and type(s.save) == "table" then
         save = s.save
         break
-      elseif s.continueInfo and s.continueInfo.save then
-        save = s.continueInfo.save
+      elseif s.giftSave and type(s.giftSave) == "table" then
+        save = s.giftSave
         break
       elseif s.items and s.items.__omniSave then
         save = s.items.__omniSave
         break
-      elseif s.list and s.list.items and s.list.items.__omniSave then
-        save = s.list.items.__omniSave
-        break
       end
     end
   end
+  return save
+end
 
-  -- If save is missing or missing party data (e.g. FRLG continue screen where continueInfo only holds header stats),
-  -- load the full save file to populate active party and full dex records.
-  if not save or not save.party or #save.party == 0 then
-    local loadedSave = nil
+local function loadSaveForVersion(ver)
+  local gen = generationOf(ver)
+  if gen == 2 then
+    local ok, Save = pcall(require, "src.core.gen2.Save")
+    if ok and Save and Save.load then
+      local okL, loaded = pcall(Save.load)
+      if okL and type(loaded) == "table" then return loaded end
+    end
+    return nil
+  end
+  if gen == 3 then
     local okKit, Kit = pcall(require, "src.ui.game3.rse.scene_kit")
     if okKit and Kit and Kit.loadRawSave then
-      local okRaw, raw = pcall(Kit.loadRawSave)
-      if okRaw and raw and type(raw) == "table" and raw.party and #raw.party > 0 then
-        loadedSave = raw
-      end
+      local okR, raw = pcall(Kit.loadRawSave)
+      if okR and type(raw) == "table" then return raw end
     end
-    if not loadedSave then
-      local okS, SD = pcall(require, "src.core.SaveData")
-      if okS and SD and SD.load then
-        local okGV, GV = pcall(require, "src.core.GameVersion")
-        local activeVer = (okGV and GV and GV.get and GV.get()) or ver
-        local okL2, loaded2 = pcall(SD.load, activeVer)
-        if okL2 and loaded2 and type(loaded2) == "table" and loaded2.party and #loaded2.party > 0 then
-          loadedSave = loaded2
-        end
-        if not loadedSave then
-          local okL, loaded = pcall(SD.load)
-          if okL and loaded and type(loaded) == "table" and loaded.party and #loaded.party > 0 then
-            loadedSave = loaded
-          end
-        end
-      end
+    return nil
+  end
+  local okS, SD = pcall(require, "src.core.SaveData")
+  if okS and SD and SD.load then
+    local okL, loaded = pcall(SD.load, ver)
+    if okL and type(loaded) == "table" and loaded.engine ~= "game3" and loaded.generation ~= 2 and loaded.generation ~= 3 then
+      return loaded
     end
-    if not loadedSave then
-      local okG2S, G2Save = pcall(require, "src.core.gen2.Save")
-      if okG2S and G2Save and G2Save.load then
-        local okL, loaded = pcall(G2Save.load)
-        if okL and loaded and type(loaded) == "table" and loaded.party and #loaded.party > 0 then
-          loadedSave = loaded
-        end
-      end
-    end
+  end
+  return nil
+end
 
-    if loadedSave then
-      if save and type(save) == "table" then
-        for k, v in pairs(loadedSave) do
-          if save[k] == nil then save[k] = v end
-        end
-        if not save.party or #save.party == 0 then save.party = loadedSave.party end
-        if not save.pokedex then save.pokedex = loadedSave.pokedex end
-      else
-        save = loadedSave
+local function partyCount(save)
+  local party = save and (save.party or save.activeParty)
+  return type(party) == "table" and #party or 0
+end
+
+local function playClock(save)
+  local playTime = (save and (save.playTime or save.playtime or save.time or (save.player and save.player.playTime))) or 0
+  if type(playTime) == "number" then
+    return ("%d:%02d"):format(math.floor(playTime / 3600), math.floor((playTime % 3600) / 60))
+  end
+  if type(playTime) == "table" then
+    return ("%d:%02d"):format(tonumber(playTime.hours or playTime.h) or 0, tonumber(playTime.minutes or playTime.m) or 0)
+  end
+  return "0:00"
+end
+
+local function dexCaught(save, gen)
+  local dex = save and (save.pokedex or save.dex) or {}
+  if gen == 3 then
+    local okD, Dex = pcall(require, "src.core.game3.dex")
+    if okD and Dex and Dex.summaryCount then
+      local stamped = save
+      if type(save) == "table" and type(save.version) ~= "string" then
+        stamped = setmetatable({ version = save.gameVersion }, { __index = save })
+      end
+      local okC, n = pcall(Dex.summaryCount, stamped)
+      if okC and tonumber(n) then return tonumber(n) end
+    end
+  end
+  if gen == 2 then
+    local n = BaseAdapter.countFlags(dex.caught)
+    if n == 0 then n = BaseAdapter.countFlags(dex.owned) end
+    return n
+  end
+  local owned = BaseAdapter.countFlags(dex.owned)
+  local caught = BaseAdapter.countFlags(dex.caught)
+  if owned > caught then return owned end
+  return caught
+end
+
+local function slotFromMon(mon)
+  if type(mon) ~= "table" then return nil end
+  if mon.isEgg then
+    return { name = "EGG", level = nil, hp = 0, maxHp = 0, isEgg = true }
+  end
+  local name = mon.nickname or mon.displayName or mon.name or mon.speciesName
+  if type(name) ~= "string" or name == "" or tonumber(name) then
+    name = resolveMonName(mon)
+  end
+  local hp = tonumber(mon.currentHp)
+  if hp == nil then hp = tonumber(mon.hp) or 0 end
+  local maxHp = tonumber(mon.maxHp) or tonumber(mon.stats and mon.stats.maxHp) or 1
+  if maxHp < 1 then maxHp = 1 end
+  return {
+    name = tostring(name),
+    level = tonumber(mon.level),
+    hp = hp,
+    maxHp = maxHp,
+    isEgg = false,
+  }
+end
+
+-- Normalized continue card for the version on screen.
+function MainMenuRenderer.preview(game, state, subState)
+  state = state or {}
+  local ver = versionOf(game, state)
+  local gen = generationOf(ver)
+  local save = attachedSave(game, state, subState)
+  local partySave = save
+  if partyCount(save) == 0 then
+    local loaded = loadSaveForVersion(ver)
+    if loaded and partyCount(loaded) > 0 then
+      partySave = loaded
+      if not save or not (save.player or save.playerName or save.name or save.pokedex or save.dex or save.flags) then
+        save = loaded
       end
     end
   end
 
-  if not save and state.continueInfo then
-    save = state.continueInfo
-  end
-  if not save and subState and subState.continueInfo then
-    save = subState.continueInfo
+  local header = headerOf(state, subState)
+  local name, badges, caught, timeStr
+  if header then
+    if header.name and header.name ~= "" then name = tostring(header.name) end
+    if header.badges ~= nil then badges = tonumber(header.badges) or 0 end
+    if header.dexCount ~= nil then caught = tonumber(header.dexCount) or 0 end
+    if header.hours ~= nil or header.minutes ~= nil then
+      timeStr = ("%d:%02d"):format(tonumber(header.hours) or 0, tonumber(header.minutes) or 0)
+    end
   end
 
-  if save and not state.__cachedSave then
-    state.__cachedSave = save
+  if (not name or name == "") and save then
+    name = (save.player and save.player.name) or save.playerName or save.name
+  end
+  if not name or name == "" then name = "TRAINER" end
+
+  if badges == nil then badges = BaseAdapter.resolveBadgeCount(save, game) end
+  if caught == nil then caught = dexCaught(save, gen) end
+  if not timeStr then timeStr = playClock(save) end
+
+  local previewGame = {
+    gameVersion = ver,
+    data = game and game.data,
+    save = partySave or save or {},
+    session = (gen == 3) and (partySave or save) or nil,
+  }
+  local party = {}
+  local okA, adapter = pcall(AdapterResolver.resolve, previewGame)
+  if okA and adapter and adapter.getParty then
+    local okP, list = pcall(adapter.getParty, adapter)
+    if okP and type(list) == "table" then
+      for _, mon in ipairs(list) do
+        local slot = slotFromMon(mon)
+        if slot then party[#party + 1] = slot end
+      end
+    end
   end
 
   local hasSave = (state.hasSave ~= nil and state.hasSave)
-      or (state.hasContinue ~= nil and state.hasContinue)
-      or (state.continueInfo ~= nil)
-      or (save and (save.player or save.playerName or (save.party and #save.party > 0)))
-  local player = save and (save.player or save) or {}
-  local playerName = player.name or (save and save.playerName) or "GOLD"
-  local badgesCount = BaseAdapter.resolveBadgeCount(save, game)
+    or (state.hasContinue ~= nil and state.hasContinue)
+    or (header ~= nil)
+    or (save and (save.player or save.playerName or save.name or partyCount(save) > 0))
+    or #party > 0
 
-  local pokedexCount = 0
-  if save and save.pokedex then
-    local ownedTbl = save.pokedex.owned or save.pokedex.caught or {}
-    if type(ownedTbl) == "number" then
-      pokedexCount = ownedTbl
-    elseif type(ownedTbl) == "table" then
-      for _ in pairs(ownedTbl) do pokedexCount = pokedexCount + 1 end
-    end
-  end
-  if pokedexCount == 0 and save and save.pokedexCount then
-    pokedexCount = tonumber(save.pokedexCount) or 0
-  end
+  if state and not state.__cachedSave and save then state.__cachedSave = save end
 
-  local playTime = (save and (save.playTime or save.time or (save.player and save.player.playTime))) or 0
-  local playTimeString = "0:00"
-  if type(playTime) == "number" then
-    local ph = math.floor(playTime / 3600)
-    local pm = math.floor((playTime % 3600) / 60)
-    playTimeString = ("%d:%02d"):format(ph, pm)
-  elseif type(playTime) == "table" then
-    local ph = playTime.hours or playTime.h or 0
-    local pm = playTime.minutes or playTime.m or 0
-    playTimeString = ("%d:%02d"):format(ph, pm)
-  end
+  return {
+    version = ver,
+    generation = gen,
+    title = versionTitle(ver),
+    name = tostring(name),
+    badges = badges or 0,
+    caught = caught or 0,
+    playTimeString = timeStr or "0:00",
+    party = party,
+    hasSave = hasSave and true or false,
+  }
+end
 
-  local info = (state and state.info) or (subState and subState.info) or (state and state.continueInfo) or (subState and subState.continueInfo)
-  if info and type(info) == "table" then
-    if info.name and info.name ~= "" then playerName = tostring(info.name) end
-    if info.badges ~= nil then badgesCount = tonumber(info.badges) or badgesCount end
-    if info.dexCount ~= nil then pokedexCount = tonumber(info.dexCount) or pokedexCount end
-    if info.hours ~= nil or info.minutes ~= nil then
-      playTimeString = ("%d:%02d"):format(tonumber(info.hours) or 0, tonumber(info.minutes) or 0)
-    end
-    if state.hasContinue or info.name ~= nil then hasSave = true end
-  end
+function MainMenuRenderer.draw(game, state, w, h, theme, subState)
+  local ctx = Layout.getContext(w, h)
+  local isNarrow = (w < 560) or ctx.isPortrait
 
-  local party = (save and save.party) or {}
-  if #party == 0 and save and save.activeParty then
-    party = save.activeParty
-  end
+  local card = MainMenuRenderer.preview(game, state, subState)
+  local ver = card.version
+  local verTitle = card.title
+  local playerName = card.name
+  local badgesCount = card.badges
+  local pokedexCount = card.caught
+  local playTimeString = card.playTimeString
+  local party = card.party
+  local hasSave = card.hasSave
 
   -- Modal child states
   local isContinuePrompt = (subState and (subState.save or (subState.titleUiBox and subState.title))) ~= nil
@@ -346,15 +423,15 @@ function MainMenuRenderer.draw(game, state, w, h, theme, subState)
           local px = 14 + col * (cellW + 6)
           local py = previewY + 98 + row * (cellH + 4)
 
-          local pNick = resolveMonName(pMon)
-          local pLvl = tonumber(pMon.level or 1)
-          local curHp = tonumber(pMon.hp or (pMon.stats and pMon.stats.hp) or 0)
-          local maxHp = tonumber(pMon.maxHp or (pMon.stats and pMon.stats.hp) or 1)
+          local pNick = tostring(pMon.name or "MON")
+          local pLvl = pMon.isEgg and "EGG" or ("Lv.%d"):format(tonumber(pMon.level) or 1)
 
           Layout.drawSlot(px, py, cellW, cellH, { color = theme.surfaceHigh, borderColor = theme.border, radius = 4 })
           Layout.drawText(pNick:sub(1, 8), px + 4, py + 3, { font = "tiny", color = theme.heading, bold = true, width = cellW - 8 })
-          Layout.drawText(("Lv.%d"):format(pLvl), px + cellW - 32, py + 3, { font = "tiny", color = theme.textDim })
-          Layout.drawHealthBar(px + 4, py + 22, cellW - 8, 4, curHp, maxHp)
+          Layout.drawText(pLvl, px + cellW - 32, py + 3, { font = "tiny", color = theme.textDim })
+          if not pMon.isEgg then
+            Layout.drawHealthBar(px + 4, py + 22, cellW - 8, 4, pMon.hp or 0, pMon.maxHp or 1)
+          end
         end
       end
     elseif curRaw:find("NEW") then
@@ -479,14 +556,13 @@ function MainMenuRenderer.draw(game, state, w, h, theme, subState)
           local px = rightX + 24 + (pi - 1) * pGridW
           local py = slotY + 132
 
-          local pNick = resolveMonName(pMon)
-          local pLvl = tonumber(pMon.level or 1)
+          local pNick = tostring(pMon.name or "MON")
+          local pLvl = pMon.isEgg and "EGG" or ("Lv. %d"):format(tonumber(pMon.level) or 1)
           Layout.drawText(pNick:sub(1, 8), px, py, { font = "caption", color = theme.heading, bold = true })
-          Layout.drawText(("Lv. %d"):format(pLvl), px, py + 16, { font = "tiny", color = theme.textDim })
-
-          local curHp = tonumber(pMon.hp or (pMon.stats and pMon.stats.hp) or 0)
-          local maxHp = tonumber(pMon.maxHp or (pMon.stats and pMon.stats.hp) or 1)
-          Layout.drawHealthBar(px, py + 30, pGridW - 8, 4, curHp, maxHp)
+          Layout.drawText(pLvl, px, py + 16, { font = "tiny", color = theme.textDim })
+          if not pMon.isEgg then
+            Layout.drawHealthBar(px, py + 30, pGridW - 8, 4, pMon.hp or 0, pMon.maxHp or 1)
+          end
         end
       end
 

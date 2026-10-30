@@ -1300,7 +1300,11 @@ local function attachPokedexControls(state, game)
       local row = activeRows[curIdx]
       if row then
         local sp = row.species or row.value or row.dex
-        if row.seen or (row.def and (row.def.seen or row.def.caught)) or (self.save and self.save.pokedex and (self.save.pokedex.seen[sp] or self.save.pokedex.owned[sp])) then
+        local dex = self.save and self.save.pokedex
+        local function dexOn(tbl)
+          return type(tbl) == "table" and tbl[sp] and tbl[sp] ~= 0 and tbl[sp] ~= false
+        end
+        if row.seen or (row.def and (row.def.seen or row.def.caught)) or (dex and (dexOn(dex.seen) or dexOn(dex.owned) or dexOn(dex.caught))) then
           if self.onChoose then
             self.onChoose(row, self)
           else
@@ -2623,6 +2627,12 @@ return function(mod)
       type = "toggle",
       default = true,
     },
+    {
+      key = "menu_animations",
+      label = "MENU ANIMATIONS",
+      type = "toggle",
+      default = true,
+    },
   })
 
   -- Synchronize theme from persisted mod options at startup
@@ -2702,8 +2712,8 @@ return function(mod)
       end
       local origMMChoose = G2MainMenu.choose
       if origMMChoose then
-        G2MainMenu.choose = function(self, value)
-          origMMChoose(self, value)
+        G2MainMenu.choose = function(self, value, index)
+          origMMChoose(self, value, index)
           if value == "continue" then
             self.confirmChoice = 1
           end
@@ -2752,9 +2762,29 @@ return function(mod)
         end
       end
 
+      local function keepsNativeGen3Save(game)
+        if type(game) ~= "table" then return false end
+        if game.generation == 3 then return true end
+        local ver = game.gameVersion or game.version
+        if type(game.session) == "table" then
+          ver = ver or game.session.version
+        end
+        ver = tostring(ver or ""):lower()
+        if ver == "firered" or ver == "leafgreen" or ver == "ruby"
+            or ver == "sapphire" or ver == "emerald" then
+          return true
+        end
+        -- Game3 persists through saveGame and has no Gen 1 state stack.
+        return game.stack == nil and type(game.saveGame) == "function"
+      end
+
       for _, item in ipairs(list) do
         local rawLabel = tostring(item.label or item.id or "")
-        if (item.id == "save" or rawLabel:upper():find("SAVE")) and item.onSelect then
+        -- Gen 3 SAVE already opens SaveMenu. The Gen 1 panel reads
+        -- game.save.playTime as seconds and pushes game.stack, both of
+        -- which throw on a Game3 session, so the row looks dead.
+        if (item.id == "save" or rawLabel:upper():find("SAVE")) and item.onSelect
+            and not keepsNativeGen3Save(game) then
           item.onSelect = function()
             local TextBox = require("src.render.TextBox")
             local Strings = require("src.core.Strings")
@@ -2935,19 +2965,30 @@ return function(mod)
     return list
   end, 50)
 
-  -- Eagerly pre-load save data when title menu opens so party & summary cards display immediately
+  -- Eagerly pre-load THIS version's save when the title menu opens, so the
+  -- continue card shows that cart's party instead of whichever file loads first.
   mod.hooks:wrap("ui.title_menu.items", function(next, game, items)
     local result = next(game, items)
-    local ok, loaded = pcall(require("src.core.SaveData").load)
-    if ok and loaded and type(loaded) == "table" then
+    local ver = game and (game.gameVersion or (game.cart and game.cart.gameVersion))
+    if not ver then
+      local okGV, GV = pcall(require, "src.core.GameVersion")
+      if okGV and GV and GV.get then ver = GV.get() end
+    end
+    ver = tostring(ver or ""):lower()
+    local loaded
+    if ver == "gold" or ver == "silver" or ver == "crystal" then
+      local ok2, loaded2 = pcall(function() return require("src.core.gen2.Save").load() end)
+      if ok2 and type(loaded2) == "table" then loaded = loaded2 end
+    elseif ver == "firered" or ver == "leafgreen" or ver == "ruby" or ver == "sapphire" or ver == "emerald" then
+      local ok3, loaded3 = pcall(function() return require("src.ui.game3.rse.scene_kit").loadRawSave() end)
+      if ok3 and type(loaded3) == "table" then loaded = loaded3 end
+    else
+      local ok1, loaded1 = pcall(require("src.core.SaveData").load, ver ~= "" and ver or nil)
+      if ok1 and type(loaded1) == "table" and loaded1.engine ~= "game3" then loaded = loaded1 end
+    end
+    if loaded then
       if game then game.__omniTitleSave = loaded end
       if type(result) == "table" then result.__omniSave = loaded end
-    else
-      local ok2, loaded2 = pcall(function() return require("src.core.gen2.Save").load() end)
-      if ok2 and loaded2 and type(loaded2) == "table" then
-        if game then game.__omniTitleSave = loaded2 end
-        if type(result) == "table" then result.__omniSave = loaded2 end
-      end
     end
     return result
   end, 50)

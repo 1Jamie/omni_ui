@@ -39,8 +39,8 @@ function BaseAdapter:normalizeMon(mon, index)
     displayName = (def and def.name) or speciesId,
     nickname = mon.nickname or (def and def.name) or speciesId,
     level = mon.level or 1,
-    currentHp = mon.hp or 0,
-    maxHp = stats.hp or mon.maxHp or mon.hp or 1,
+    currentHp = tonumber(mon.hp) or tonumber(mon.currentHp) or 0,
+    maxHp = tonumber(mon.maxHp) or tonumber(stats.hp) or tonumber(mon.hp) or 1,
     status = mon.status,
     types = (def and def.types) or { "NORMAL" },
     heldItem = mon.heldItem or mon.item,
@@ -51,6 +51,18 @@ function BaseAdapter:normalizeMon(mon, index)
     moves = mon.moves or {},
     raw = mon,
   }
+end
+
+--- Truthy entries in a flag map. Gen 1 and Gen 2 dex and badge tables are
+--- species or badge name -> true, so the array length is always zero.
+function BaseAdapter.countFlags(tbl)
+  if type(tbl) == "number" then return tbl end
+  if type(tbl) ~= "table" then return 0 end
+  local n = 0
+  for _, v in pairs(tbl) do
+    if v and v ~= 0 and v ~= false then n = n + 1 end
+  end
+  return n
 end
 
 --- Resolves the badge count across all Gen 1-3 save formats, inventories, flags, and mod tables.
@@ -159,18 +171,7 @@ function BaseAdapter:getPlayerInfo()
     t = hours * 3600 + minutes * 60 + seconds
   end
 
-  local locationName = "KANTO"
-  local ow = self.game and self.game.overworld
-  local mapId = (ow and ow.map and ow.map.id) or (ow and ow.mapId) or save.map
-  if mapId then
-    local data = self.game and self.game.data
-    local mapDef = data and data.maps and data.maps[mapId]
-    if mapDef and mapDef.name then
-      locationName = mapDef.name
-    else
-      locationName = tostring(mapId):gsub("_", " "):upper()
-    end
-  end
+  local locationName = self:resolveLocation(save) or "KANTO"
 
   return {
     name = player.name or save.playerName or save.name or "TRAINER",
@@ -187,6 +188,116 @@ function BaseAdapter:getPlayerInfo()
   }
 end
 
+local function flattenPlace(name)
+  if type(name) ~= "string" or name == "" then return nil end
+  name = name:gsub("\n", " "):gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
+  if name == "" then return nil end
+  return name
+end
+
+local function landmarkName(pack, index)
+  if type(pack) ~= "table" or index == nil then return nil end
+  local marks = pack.landmarks or pack
+  local n = tonumber(index)
+  if type(marks) ~= "table" or not n then return nil end
+  for _, entry in pairs(marks) do
+    if type(entry) == "table" and tonumber(entry.index) == n then
+      return flattenPlace(entry.name)
+    end
+  end
+  return nil
+end
+
+-- Where the player is standing, in the form each generation actually stores.
+function BaseAdapter:resolveLocation(save)
+  save = save or (self.game and self.game.save) or {}
+  local game = self.game
+  local ow = game and game.overworld
+  if ow and ow.landmarkName then
+    local ok, name = pcall(ow.landmarkName, ow)
+    if ok then
+      local place = flattenPlace(name)
+      if place then return place end
+    end
+  end
+  local session = game and (game.session or (save and save.session))
+  local mapId = (ow and ow.map and (ow.map.id or ow.map.mapId))
+    or (ow and ow.mapId)
+    or (save.position and save.position.map)
+    or save.map
+    or (session and (session.mapName or session.map))
+  local data = game and game.data
+  local mapDef = data and data.maps and mapId and data.maps[mapId]
+  if mapDef and mapDef.name then
+    local place = flattenPlace(mapDef.name)
+    if place then return place end
+  end
+  local pack = data and (data.gen2Landmarks or data.landmarks)
+  if mapDef and mapDef.landmark ~= nil then
+    local place = landmarkName(pack, mapDef.landmark)
+    if place then return place end
+  end
+  if ow and ow.landmarkName and mapDef and mapDef.landmark ~= nil then
+    local ok, name = pcall(ow.landmarkName, ow, mapDef.landmark)
+    if ok then
+      local place = flattenPlace(name)
+      if place then return place end
+    end
+  end
+  if type(mapId) == "string" and mapId ~= "" and not tonumber(mapId) then
+    return mapId:gsub("_", " "):upper()
+  end
+  return nil
+end
+
+-- A dex flag may be keyed by species id, display name, or dex number.
+function BaseAdapter:dexFlag(tbl, speciesId)
+  if type(tbl) ~= "table" or speciesId == nil then return false end
+  local function on(key)
+    if key == nil or key == "" then return false end
+    local v = tbl[key]
+    return v and v ~= 0 and v ~= false
+  end
+  if on(speciesId) then return true end
+  if type(speciesId) == "string" then
+    local upper = speciesId:upper()
+    if on(upper) then return true end
+    local n = tonumber(speciesId)
+    if n and on(n) then return true end
+  elseif type(speciesId) == "number" then
+    if on(tostring(speciesId)) then return true end
+  end
+  local pokemon = self.game and self.game.data and self.game.data.pokemon
+  if type(pokemon) ~= "table" then return false end
+  local def = pokemon[speciesId]
+  if type(def) == "table" then
+    if on(def.id) or on(def.species) or on(def.name) or on(def.dex) then return true end
+  end
+  if type(speciesId) == "number" then
+    for id, d in pairs(pokemon) do
+      if type(d) == "table" and (d.dex == speciesId or d.nationalDex == speciesId or d.johtoDex == speciesId) then
+        if on(id) or on(d.id) or on(d.name) then return true end
+      end
+    end
+  end
+  return false
+end
+
+-- Strip cart control codes and resolve a text-bank key into a sentence.
+function BaseAdapter.plainText(text, data)
+  if type(text) == "table" then text = table.concat(text, " ") end
+  if type(text) ~= "string" or text == "" then return nil end
+  if data and data.text and type(data.text[text]) == "string" then
+    text = data.text[text]
+  elseif data and data.text and type(data.text[text]) == "table" then
+    text = table.concat(data.text[text], " ")
+  end
+  text = text:gsub("<NEXT>", " "):gsub("<LINE>", " "):gsub("<PAGE>", " ")
+  text = text:gsub("[\f\v\n]+", " "):gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
+  if text == "" or text == "?" or text == "???" then return nil end
+  return text
+end
+
 -- Normalized pokedex seen/owned counts
 function BaseAdapter:getPokedexCounts()
   local save = self.game and self.game.save or {}
@@ -194,18 +305,29 @@ function BaseAdapter:getPokedexCounts()
   local seenCount = 0
   local ownedCount = 0
 
-  if type(dex.seen) == "table" then
-    for _ in pairs(dex.seen) do seenCount = seenCount + 1 end
-  elseif type(dex.seen) == "number" then
-    seenCount = dex.seen
-  end
+  seenCount = BaseAdapter.countFlags(dex.seen)
 
-  local ownedTbl = dex.owned or dex.caught
-  if type(ownedTbl) == "table" then
-    for _ in pairs(ownedTbl) do ownedCount = ownedCount + 1 end
-  elseif type(ownedTbl) == "number" then
-    ownedCount = ownedTbl
+  -- Gen 1 records ownership on `owned`. Gen 2 records it on `caught`.
+  -- A save can carry both; count each species once.
+  local ownedKeys = {}
+  local function takeOwned(tbl)
+    if type(tbl) == "number" then
+      if tbl > ownedCount then ownedCount = tbl end
+      return
+    end
+    if type(tbl) ~= "table" then return end
+    for k, v in pairs(tbl) do
+      if v and v ~= 0 and v ~= false then ownedKeys[k] = true end
+    end
   end
+  takeOwned(dex.owned)
+  takeOwned(dex.caught)
+  if next(ownedKeys) then
+    local n = 0
+    for _ in pairs(ownedKeys) do n = n + 1 end
+    if n > ownedCount then ownedCount = n end
+  end
+  if seenCount < ownedCount then seenCount = ownedCount end
 
   return {
     seen = seenCount,
@@ -215,31 +337,16 @@ end
 
 function BaseAdapter:hasSeen(speciesId)
   local save = self.game and self.game.save or {}
-  local dex = save.pokedex or {}
-  local seenTbl = dex.seen or {}
-  if seenTbl[speciesId] == true then return true end
-  if type(speciesId) == "number" then
-    if seenTbl[tostring(speciesId)] == true then return true end
-  elseif type(speciesId) == "string" then
-    local num = tonumber(speciesId)
-    if num and seenTbl[num] == true then return true end
-    if seenTbl[speciesId:upper()] == true then return true end
-  end
+  local dex = save.pokedex or save.dex or {}
+  if self:dexFlag(dex.seen, speciesId) then return true end
   return self:hasCaught(speciesId)
 end
 
 function BaseAdapter:hasCaught(speciesId)
   local save = self.game and self.game.save or {}
-  local dex = save.pokedex or {}
-  local ownedTbl = dex.owned or dex.caught or {}
-  if ownedTbl[speciesId] == true then return true end
-  if type(speciesId) == "number" then
-    if ownedTbl[tostring(speciesId)] == true then return true end
-  elseif type(speciesId) == "string" then
-    local num = tonumber(speciesId)
-    if num and ownedTbl[num] == true then return true end
-    if ownedTbl[speciesId:upper()] == true then return true end
-  end
+  local dex = save.pokedex or save.dex or {}
+  if self:dexFlag(dex.owned, speciesId) then return true end
+  if self:dexFlag(dex.caught, speciesId) then return true end
   return false
 end
 
@@ -541,16 +648,12 @@ function BaseAdapter:getDexEntry(speciesId)
     end
   end
 
-  -- Format description
-  local desc = dexEntry.description
-  if not desc and dexEntry.text and data.text then
-    desc = data.text[dexEntry.text]
-  end
-  if not desc and def and def.description then
-    desc = def.description
-  end
-  if type(desc) == "table" then desc = table.concat(desc, " ") end
-  desc = tostring(desc or "A wild POKÉMON discovered across the region."):gsub("[\f\v\n]+", " "):gsub("%s+", " ")
+  -- Format description. Gen 1 stores a text-bank key; later gens store the sentence.
+  local desc = BaseAdapter.plainText(dexEntry.description, data)
+    or BaseAdapter.plainText(dexEntry.text, data)
+    or BaseAdapter.plainText(dexEntry.text2, data)
+    or BaseAdapter.plainText(def and def.description, data)
+  desc = desc or "A wild POKÉMON discovered across the region."
 
   return {
     species = speciesId,

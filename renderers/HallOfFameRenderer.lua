@@ -2,6 +2,7 @@
 -- High-res victory pedestal sequence preserving progressive reveal pacing, orientation adaptability, and audio sync.
 
 local Layout = require("mods.omni_ui.core.Layout")
+local BaseAdapter = require("mods.omni_ui.adapters.BaseAdapter")
 local Widgets = require("mods.omni_ui.core.Widgets")
 local PaletteFX = require("src.render.PaletteFX")
 local SpriteHelper = require("mods.omni_ui.core.SpriteHelper")
@@ -196,8 +197,10 @@ function HallOfFameRenderer.draw(game, state, w, h, theme, subState, progress)
         { label = "PLAY TIME", val = ("%02d:%02d"):format(pHours, pMins) },
         { label = "PRIZE MONEY", val = moneyStr },
         { label = "LEAGUE BADGES", val = "8 / 8  (KANTO)" },
-        { label = "POKÉDEX SEEN", val = tostring(type(save.pokedex and save.pokedex.seen) == "table" and #save.pokedex.seen or 0) },
-        { label = "POKÉDEX OWNED", val = tostring(type(save.pokedex and save.pokedex.owned) == "table" and #save.pokedex.owned or 0) },
+        { label = "POKÉDEX SEEN", val = tostring(BaseAdapter.countFlags(save.pokedex and save.pokedex.seen)) },
+        { label = "POKÉDEX OWNED", val = tostring(math.max(
+          BaseAdapter.countFlags(save.pokedex and save.pokedex.owned),
+          BaseAdapter.countFlags(save.pokedex and save.pokedex.caught))) },
       }
 
       local py = plaqueY + 48
@@ -325,8 +328,10 @@ function HallOfFameRenderer.draw(game, state, w, h, theme, subState, progress)
         { label = "PLAY TIME", val = ("%02d:%02d"):format(pHours, pMins) },
         { label = "PRIZE MONEY", val = moneyStr },
         { label = "LEAGUE BADGES", val = "8 / 8  (KANTO)" },
-        { label = "POKÉDEX SEEN", val = tostring(type(save.pokedex and save.pokedex.seen) == "table" and #save.pokedex.seen or 0) },
-        { label = "POKÉDEX OWNED", val = tostring(type(save.pokedex and save.pokedex.owned) == "table" and #save.pokedex.owned or 0) },
+        { label = "POKÉDEX SEEN", val = tostring(BaseAdapter.countFlags(save.pokedex and save.pokedex.seen)) },
+        { label = "POKÉDEX OWNED", val = tostring(math.max(
+          BaseAdapter.countFlags(save.pokedex and save.pokedex.owned),
+          BaseAdapter.countFlags(save.pokedex and save.pokedex.caught))) },
       }
 
       for _, row in ipairs(pRows) do

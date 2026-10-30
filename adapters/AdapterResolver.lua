@@ -38,7 +38,12 @@ function AdapterResolver.resolve(game)
   -- 3. Check game instance's own save/data structures
   if game then
     local data = game.data or {}
-    if data.gen2Palettes or data.gen2Icons or (game.save and (game.save.johtoBadges or game.save.kantoBadges or game.save.momMoney)) then
+    local save = game.save
+    local player = save and save.player
+    if data.gen2Palettes or data.gen2Icons or (save and (
+        save.generation == 2 or save.johtoBadges or save.kantoBadges
+        or save.momMoney or save.mom or save.phoneContacts
+        or (player and player.kantoBadges))) then
       return Gen2Adapter.new(game)
     end
     if (game.save and (game.save.session or game.save.game3)) or game.session then

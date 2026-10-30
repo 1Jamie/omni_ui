@@ -642,8 +642,10 @@ function Gen3Adapter:normalizeMon(mon, index)
       spDefense = spdVal, spd = spdVal, spDef = spdVal,
       speed = speVal, spe = speVal,
     }
-    norm.maxHp = tonumber(mon.maxHp or hpVal) or 1
-    norm.currentHp = tonumber(mon.hp or mon.currentHp or hpVal) or norm.maxHp
+    norm.maxHp = tonumber(mon.maxHp) or hpVal or 1
+    local cur = tonumber(mon.hp)
+    if cur == nil then cur = tonumber(mon.currentHp) end
+    norm.currentHp = cur or norm.maxHp
     norm.hp = norm.currentHp
   elseif okP and Pokemon and Pokemon.calcStats and speciesNum then
     local ivs = mon.ivs or {}
@@ -658,7 +660,9 @@ function Gen3Adapter:normalizeMon(mon, index)
       speed = st.speed, spe = st.speed,
     }
     norm.maxHp = st.maxHp
-    norm.currentHp = tonumber(mon.hp or mon.currentHp) or st.maxHp
+    local cur = tonumber(mon.hp)
+    if cur == nil then cur = tonumber(mon.currentHp) end
+    norm.currentHp = cur or st.maxHp
     norm.hp = norm.currentHp
   else
     norm.stats = {
@@ -834,6 +838,15 @@ function Gen3Adapter:getPlayerInfo()
   end
 
   info.pokedex = self:getPokedexCounts()
+
+  local hasPlace = session and (session.map or session.mapName or session.currentMapSec or session.mapSec or session.regionMapSectionId)
+  local okSave, SaveMenu = pcall(require, "src.ui.game3.save_menu")
+  if hasPlace and okSave and SaveMenu and SaveMenu.locationName then
+    local okLoc, place = pcall(SaveMenu.locationName, session)
+    if okLoc and type(place) == "string" and place ~= "" then
+      info.location = place
+    end
+  end
 
   return info
 end
@@ -1761,18 +1774,25 @@ function Gen3Adapter:getPokedexCounts()
   local ownedCount = 0
 
   if dex then
-    if type(dex.seen) == "table" then
-      for _ in pairs(dex.seen) do seenCount = seenCount + 1 end
-    elseif type(dex.seen) == "number" then
-      seenCount = dex.seen
+    -- Species -> true maps. Dex.countSeen / countCaught below are the
+    -- engine's own totals and win when they see more than the raw map.
+    seenCount = BaseAdapter.countFlags(dex.seen)
+    local ownedKeys = {}
+    local function take(tbl)
+      if type(tbl) == "number" then
+        if tbl > ownedCount then ownedCount = tbl end
+        return
+      end
+      if type(tbl) ~= "table" then return end
+      for k, v in pairs(tbl) do
+        if v and v ~= 0 and v ~= false then ownedKeys[k] = true end
+      end
     end
-
-    local ownedTbl = dex.owned or dex.caught
-    if type(ownedTbl) == "table" then
-      for _ in pairs(ownedTbl) do ownedCount = ownedCount + 1 end
-    elseif type(ownedTbl) == "number" then
-      ownedCount = ownedTbl
-    end
+    take(dex.owned)
+    take(dex.caught)
+    local n = 0
+    for _ in pairs(ownedKeys) do n = n + 1 end
+    if n > ownedCount then ownedCount = n end
   end
 
   local okSave, SaveMenu = pcall(require, "src.ui.game3.save_menu")
@@ -2045,17 +2065,13 @@ function Gen3Adapter:getDexEntry(speciesId)
     weightStr = ("%.1f lbs."):format(dexEntry.weight / 10)
   end
 
-  -- Format description
-  local desc = (pdEntry and pdEntry.description and pdEntry.description ~= "" and pdEntry.description)
-    or dexEntry.description
-  if not desc and dexEntry.text and data.text then
-    desc = data.text[dexEntry.text]
-  end
-  if not desc and def and def.description then
-    desc = def.description
-  end
-  if type(desc) == "table" then desc = table.concat(desc, " ") end
-  desc = tostring(desc or "A wild POKÉMON discovered across the region."):gsub("[\f\v\n]+", " "):gsub("%s+", " ")
+  -- Format description. Cart pages use <NEXT>; Gen 1 leftovers are text-bank keys.
+  local desc = BaseAdapter.plainText(pdEntry and pdEntry.description, data)
+    or BaseAdapter.plainText(dexEntry and dexEntry.description, data)
+    or BaseAdapter.plainText(dexEntry and dexEntry.text, data)
+    or BaseAdapter.plainText(def and def.description, data)
+  desc = desc or "A wild POKÉMON discovered across the region."
+  local desc2 = BaseAdapter.plainText(pdEntry and pdEntry.description2, data) or desc
 
   return {
     species = sp,
@@ -2073,7 +2089,7 @@ function Gen3Adapter:getDexEntry(speciesId)
     weightMetric = weightMetric,
     weightKg = weightMetric,
     description = desc,
-    description2 = pdEntry and pdEntry.description2 or desc,
+    description2 = desc2,
     seen = isSeen,
     caught = isCaught,
     hasFootprint = (self:getFootprint(sp) ~= nil),

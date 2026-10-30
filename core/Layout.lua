@@ -6,6 +6,21 @@ local Theme = require("mods.omni_ui.core.Theme")
 
 local Layout = {}
 
+-- nil follows the MENU ANIMATIONS mod option. true/false forces the mode.
+Layout.menuAnimations = nil
+
+function Layout.animationsEnabled()
+  if Layout.menuAnimations ~= nil then
+    return Layout.menuAnimations ~= false
+  end
+  local overlay = package.loaded["mods.omni_ui.core.ModernOverlay"]
+  local opts = overlay and overlay.options
+  if opts and type(opts.get) == "function" then
+    return opts:get("menu_animations") ~= false
+  end
+  return true
+end
+
 -- Cache of TrueType vector fonts keyed by logical role
 local fontCache = {}
 
@@ -175,6 +190,15 @@ function Layout.cleanText(text)
   text = text:gsub("{PLAYER}", "PLAYER")
   text = text:gsub("{RIVAL}", "RIVAL")
   text = text:gsub("{STR_VAR_%d+}", "")
+  -- Font glyphs. {LV_2} is the small "Lv" symbol in the trainer memo.
+  text = text:gsub("{LV_2}", "Lv.")
+  text = text:gsub("{LV}", "Lv.")
+  text = text:gsub("{PP}", "PP")
+  text = text:gsub("{ID}", "ID")
+  text = text:gsub("{PLUS}", "+")
+  text = text:gsub("{LEFT_PAREN}", "(")
+  text = text:gsub("{RIGHT_PAREN}", ")")
+  text = text:gsub("{PKMN}", "POKéMON")
 
   -- 3. Control byte sanitization
   text = text:gsub("[\f\v\r]", "\n")
@@ -393,7 +417,7 @@ end
 
 function Layout.drawTextWrapped(text, x, y, wrapLimit, opts)
   opts = opts or {}
-  text = tostring(text or "")
+  text = Layout.cleanText(text)
   local fontName = opts.font or "body"
   local theme = Theme.get()
   local color = opts.color or theme.text
@@ -855,7 +879,7 @@ end
 
 -- Staggered list cascade helper for juicy entrance animations
 function Layout.getCascadeOffset(i, animProgress, delayPerItem, maxSlide)
-  if type(animProgress) ~= "number" or animProgress >= 1.0 then
+  if not Layout.animationsEnabled() or type(animProgress) ~= "number" or animProgress >= 1.0 then
     return 0, 1.0
   end
   delayPerItem = delayPerItem or 0.025

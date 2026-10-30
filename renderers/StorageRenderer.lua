@@ -194,6 +194,10 @@ function StorageRenderer.draw(game, state, w, h, theme, subState, animProgress)
   -- Check box transition animation state
   local now = (love and love.timer and love.timer.getTime and love.timer.getTime()) or os.clock()
   local trans = ctrl.boxTransition
+  if trans and not Layout.animationsEnabled() then
+    ctrl.boxTransition = nil
+    trans = nil
+  end
   local isTrans = false
   local p = 1.0
   local t = 1.0
@@ -370,25 +374,34 @@ function StorageRenderer.draw(game, state, w, h, theme, subState, animProgress)
 
     local dt = (love and love.timer and love.timer.getDelta and love.timer.getDelta()) or 0.016
     local curTime = (love and love.timer and love.timer.getTime and love.timer.getTime()) or 0
-    if not grabbed.animX then
-      local ox, oy = getSlotBounds(grabbed.sourceLoc, grabbed.sourceSlot)
-      grabbed.animX = ox
-      grabbed.animY = oy
+    local animateGrab = Layout.animationsEnabled()
+    if not animateGrab then
+      grabbed.animX = targetX
+      grabbed.animY = targetY
       grabbed.animW = targetW
       grabbed.animH = targetH
-      grabbed.elevation = 0.0
+      grabbed.elevation = 0
+    else
+      if not grabbed.animX then
+        local ox, oy = getSlotBounds(grabbed.sourceLoc, grabbed.sourceSlot)
+        grabbed.animX = ox
+        grabbed.animY = oy
+        grabbed.animW = targetW
+        grabbed.animH = targetH
+        grabbed.elevation = 0.0
+      end
+
+      local lerpFactor = math.min(1.0, dt * 22)
+      grabbed.animX = grabbed.animX + (targetX - grabbed.animX) * lerpFactor
+      grabbed.animY = grabbed.animY + (targetY - grabbed.animY) * lerpFactor
+      grabbed.animW = grabbed.animW + (targetW - grabbed.animW) * lerpFactor
+      grabbed.animH = grabbed.animH + (targetH - grabbed.animH) * lerpFactor
+      grabbed.elevation = math.min(1.0, (grabbed.elevation or 0) + (dt / 0.12))
     end
 
-    local lerpFactor = math.min(1.0, dt * 22)
-    grabbed.animX = grabbed.animX + (targetX - grabbed.animX) * lerpFactor
-    grabbed.animY = grabbed.animY + (targetY - grabbed.animY) * lerpFactor
-    grabbed.animW = grabbed.animW + (targetW - grabbed.animW) * lerpFactor
-    grabbed.animH = grabbed.animH + (targetH - grabbed.animH) * lerpFactor
-    grabbed.elevation = math.min(1.0, (grabbed.elevation or 0) + (dt / 0.12))
-
-    local popScale = 1.0 + 0.12 * grabbed.elevation
-    local liftOffset = -10 * grabbed.elevation
-    local floatBob = math.sin(curTime * 5.0) * 3.0
+    local popScale = 1.0 + 0.12 * (grabbed.elevation or 0)
+    local liftOffset = -10 * (grabbed.elevation or 0)
+    local floatBob = animateGrab and (math.sin(curTime * 5.0) * 3.0) or 0
 
     local drawX = grabbed.animX
     local drawY = grabbed.animY + liftOffset + floatBob

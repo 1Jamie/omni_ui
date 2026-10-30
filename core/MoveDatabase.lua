@@ -661,8 +661,8 @@ end
 
 local function usableMoveText(raw)
   if type(raw) ~= "string" then return nil end
-  local text = raw:gsub("\n", " "):gsub("%s+", " ")
-  if text == "" or text == "---" or text == "--" then return nil end
+  local text = raw:gsub("\n", " "):gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
+  if text == "" or text == "?" or text == "???" or text == "---" or text == "--" then return nil end
   if text:match("^A .+ technique used in battle%.?$") then return nil end
   return text
 end

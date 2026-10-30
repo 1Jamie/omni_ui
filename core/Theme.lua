@@ -420,6 +420,11 @@ function Theme.setTheme(id, duration)
     duration = isInteractive and 0.35 or 0
   end
 
+  local Layout = package.loaded["mods.omni_ui.core.Layout"]
+  if Layout and Layout.animationsEnabled and not Layout.animationsEnabled() then
+    duration = 0
+  end
+
   if id == Theme.currentThemeId and not Theme.transition then return end
   if id == Theme.currentThemeId and Theme.transition and Theme.transition.to and Theme.transition.to.id == id then
     return

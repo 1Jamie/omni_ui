@@ -5,6 +5,7 @@
 local Layout = require("mods.omni_ui.core.Layout")
 local Widgets = require("mods.omni_ui.core.Widgets")
 local Strings = require("src.core.Strings")
+local AdapterResolver = require("mods.omni_ui.adapters.AdapterResolver")
 
 local PokegearRenderer = {}
 
@@ -86,13 +87,19 @@ local function drawClockCard(game, state, x, y, w, h, theme, isNarrow)
 
   local save = (game and game.save) or (state and state.save) or {}
   local player = save.player or {}
-  local pName = player.name or "TRAINER"
-  local money = player.money or save.money or 0
-  local johtoBadges = save.johtoBadges or player.johtoBadges or {}
-  local kantoBadges = save.kantoBadges or player.kantoBadges or {}
-  local badgeCount = 0
-  for _, b in ipairs(johtoBadges) do if b then badgeCount = badgeCount + 1 end end
-  for _, b in ipairs(kantoBadges) do if b then badgeCount = badgeCount + 1 end end
+  local info = {}
+  if game then
+    local adapter = AdapterResolver.resolve(game)
+    if adapter and adapter.getPlayerInfo then
+      local okInfo, got = pcall(function() return adapter:getPlayerInfo() end)
+      if okInfo and type(got) == "table" then info = got end
+    end
+  end
+  local pName = info.name or player.name or save.playerName or "TRAINER"
+  local money = tonumber(info.money or player.money or save.money) or 0
+  local badgeCount = tonumber(info.badges) or 0
+  local maxBadges = tonumber(info.maxBadges) or 16
+  local dexSeen = info.pokedex and tonumber(info.pokedex.seen) or 0
 
   local curLandmark = (state.mapLandmark and state:mapLandmark()) or {}
   local locName = curLandmark.name or (state.currentLandmark and tostring(state.currentLandmark):gsub("_", " ")) or "JOHTO REGION"
@@ -127,7 +134,8 @@ local function drawClockCard(game, state, x, y, w, h, theme, isNarrow)
 
     drawStatRow("TRAINER", pName)
     drawStatRow("SAVED CASH", ("¥%d"):format(money))
-    drawStatRow("BADGES WON", ("%d / 16"):format(badgeCount))
+    drawStatRow("BADGES WON", ("%d / %d"):format(badgeCount, maxBadges))
+    drawStatRow("POKÉDEX SEEN", tostring(dexSeen))
     drawStatRow("DST SWITCH", "STANDARD TIME")
   else
     -- Widescreen 2-Column Clock & Adventure Dashboard
@@ -174,8 +182,8 @@ local function drawClockCard(game, state, x, y, w, h, theme, isNarrow)
 
     drawDashRow("TRAINER NAME", pName)
     drawDashRow("HELD MONEY", ("¥%s"):format(tostring(money):reverse():gsub("(%d%d%d)", "%1,"):reverse():gsub("^,", "")))
-    drawDashRow("GYM BADGES", ("%d TOTAL"):format(badgeCount))
-    drawDashRow("POKÉDEX SEEN", tostring((save.pokedex and save.pokedex.seen and #save.pokedex.seen) or (save.seenCount) or "---"))
+    drawDashRow("GYM BADGES", ("%d / %d"):format(badgeCount, maxBadges))
+    drawDashRow("POKÉDEX SEEN", tostring(dexSeen))
   end
 end
 

@@ -178,6 +178,35 @@ function Gen2Adapter:normalizeMon(mon, index)
     norm.form = mon.form
   end
 
+  -- Caught place and level. The summary reads metLocation / originDesc.
+  -- caughtLocation 0 means the cart has not stamped a landmark yet.
+  local caughtIndex = tonumber(mon.caughtLocation)
+  if caughtIndex and caughtIndex > 0 then
+    local pack = data and data.gen2Landmarks
+    local marks = pack and pack.landmarks
+    if type(marks) == "table" then
+      for _, entry in pairs(marks) do
+        if type(entry) == "table" and tonumber(entry.index) == caughtIndex and entry.name then
+          norm.metLocation = entry.name:gsub("\n", " ")
+          break
+        end
+      end
+    end
+  end
+  local caughtLevel = tonumber(mon.caughtLevel)
+  if caughtLevel and caughtLevel > 0 then norm.metLevel = caughtLevel end
+  local save = self.game and self.game.save
+  local player = save and save.player
+  norm.otName = mon.otName or mon.ot or (player and player.name) or norm.otName
+  norm.otId = tonumber(mon.otId or mon.id or (player and player.id)) or norm.otId or 0
+  if norm.metLocation then
+    if norm.metLevel then
+      norm.originDesc = ("Met at %s (Lv. %d)"):format(norm.metLocation, norm.metLevel)
+    else
+      norm.originDesc = ("Met at %s"):format(norm.metLocation)
+    end
+  end
+
   -- 4. Pokérus Derivation (Active vs Cured)
   local okPkrs, Pokerus = pcall(require, "src.core.gen2.Pokerus")
   local rawPkrs = mon.pokerus or mon.pokerusStatus
@@ -249,11 +278,115 @@ end
 -- -------------------------------------------------------------------------
 -- Bag & 4-Pocket System (ITEMS, BALLS, KEY_ITEMS, TM_HM)
 -- -------------------------------------------------------------------------
+
+-- A Gen 2 machine's item id is the object name (`TM_DIG`). The cart prints
+-- the TM number (`tmLabel`) and the move, and the move record holds power,
+-- accuracy, and the description. `desc` is not a field on these records.
+local function cleanText(text)
+  if type(text) ~= "string" then return nil end
+  local d = text:gsub("<NEXT>", " "):gsub("<LINE>", " "):gsub("<PAGE>", " ")
+  d = d:gsub("\n", " "):gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
+  if d == "" or d == "?" or d == "???" or d == "--" or d == "---" then return nil end
+  return d
+end
+
+local function moveIdOf(itemId, def)
+  if def then
+    if type(def.teaches) == "string" and def.teaches ~= "" then return def.teaches end
+    if type(def.moveId) == "string" and def.moveId ~= "" then return def.moveId end
+    if def.machine and type(def.machine.move) == "string" and def.machine.move ~= "" then
+      return def.machine.move
+    end
+  end
+  if type(itemId) ~= "string" then return nil end
+  local fromId = itemId:match("^TM_([A-Z][A-Z0-9_]*)$") or itemId:match("^HM_([A-Z][A-Z0-9_]*)$")
+  if fromId and not fromId:match("^%d+$") then return fromId end
+  return nil
+end
+
+local function machineTag(itemId, def)
+  if def and type(def.tmLabel) == "string" and def.tmLabel ~= "" and def.tmLabel ~= itemId then
+    return def.tmLabel
+  end
+  if def and type(def.name) == "string" and def.name:match("^[TH]M%d+$") then
+    return def.name
+  end
+  if type(itemId) == "string" and itemId:match("^HM_") then return "HM" end
+  if type(itemId) == "string" and itemId:match("^TM_") then return "TM" end
+  return "TM"
+end
+
+function Gen2Adapter:machineInfo(itemId, def)
+  local data = self.game and self.game.data or {}
+  if not def and data.items then def = data.items[itemId] end
+  local moveId = moveIdOf(itemId, def)
+  local moveDef = moveId and data.moves and data.moves[moveId] or nil
+  local moveName = (moveDef and cleanText(moveDef.name))
+    or (moveId and tostring(moveId):gsub("_", " "))
+    or "UNKNOWN"
+  local desc
+  if moveId then
+    local MoveDatabase = require("mods.omni_ui.core.MoveDatabase")
+    local looked = moveDef
+    if moveDef then
+      looked = {}
+      for k, v in pairs(moveDef) do looked[k] = v end
+      if not cleanText(looked.description) then looked.description = nil end
+      if not cleanText(looked.desc) then looked.desc = nil end
+      if not cleanText(looked.flavorText) then looked.flavorText = nil end
+    end
+    local ok, text = pcall(MoveDatabase.getDescription, moveId, looked, self.game)
+    if ok then desc = cleanText(text) end
+  end
+  if not desc and def then
+    desc = cleanText(def.description) or cleanText(def.flavorText) or cleanText(def.desc)
+  end
+  return {
+    moveId = moveId,
+    tag = machineTag(itemId, def),
+    moveName = moveName,
+    moveType = moveDef and moveDef.type or nil,
+    power = moveDef and moveDef.power or nil,
+    accuracy = moveDef and moveDef.accuracy or nil,
+    pp = moveDef and moveDef.pp or nil,
+    desc = desc or "",
+  }
+end
+
+-- Pack rows keep the object id and a display-only `teaches` string. The bag
+-- draws a copy so the live row the pack uses for Use/Toss stays untouched.
+function Gen2Adapter:presentBagItem(item)
+  if type(item) ~= "table" or item.cancel then return item end
+  local id = item.id or item.value
+  local data = self.game and self.game.data or {}
+  local def = item.def or (data.items and data.items[id])
+  local info = self:machineInfo(id, def)
+  local isMachine = info.moveId ~= nil or item.isTM
+    or (type(id) == "string" and (id:match("^TM_") or id:match("^HM_")))
+  if not isMachine then return item end
+  local view = {}
+  for k, v in pairs(item) do view[k] = v end
+  view.isTM = true
+  view.teaches = info.moveId or item.teaches
+  view.tmLabel = info.tag
+  view.moveName = info.moveName
+  view.moveType = info.moveType
+  view.power = info.power
+  view.accuracy = info.accuracy
+  view.pp = info.pp
+  if info.desc ~= "" then view.desc = info.desc end
+  if info.tag and info.tag:match("%d") then
+    view.label = info.tag .. " " .. info.moveName
+  else
+    view.label = info.moveName
+  end
+  return view
+end
+
 function Gen2Adapter:getBagPockets()
   local save = self.game and self.game.save or {}
   local data = self.game and self.game.data or {}
   local itemsData = data.items or {}
-  local movesData = data.moves or {}
 
   local pockets = {
     { id = "ITEM", label = "ITEMS", items = {} },
@@ -285,22 +418,22 @@ function Gen2Adapter:getBagPockets()
       local pKey = def.pocket or "ITEM"
       local targetPocket = pocketMap[pKey] or pockets[1]
 
-      if targetPocket.id == "TM_HM" or def.teaches then
-        local moveId = def.teaches or def.moveId
-        local moveDef = movesData[moveId] or {}
+      if targetPocket.id == "TM_HM" or def.teaches or def.moveId or (def.machine and def.machine.move) then
+        local info = self:machineInfo(id, def)
         pockets[4].items[#pockets[4].items + 1] = {
           id = id,
-          label = def.name or id,
+          label = (info.tag and info.tag:match("%d")) and (info.tag .. " " .. info.moveName) or info.moveName,
+          tmLabel = info.tag,
           count = qty,
           pocket = "TM_HM",
-          desc = def.desc or (moveDef and moveDef.desc) or "",
+          desc = info.desc,
           isTM = true,
-          teaches = moveId,
-          moveName = (moveDef and moveDef.name) or (moveId and moveId:gsub("_", " ")) or "UNKNOWN",
-          moveType = (moveDef and moveDef.type) or "NORMAL",
-          power = moveDef.power or 0,
-          accuracy = moveDef.accuracy or 100,
-          pp = moveDef.pp or 0,
+          teaches = info.moveId,
+          moveName = info.moveName,
+          moveType = info.moveType,
+          power = info.power,
+          accuracy = info.accuracy,
+          pp = info.pp,
         }
       else
         targetPocket.items[#targetPocket.items + 1] = {
@@ -320,21 +453,21 @@ function Gen2Adapter:getBagPockets()
   for tmId, qty in pairs(tmBag) do
     if type(qty) == "number" and qty > 0 then
       local def = itemsData[tmId] or {}
-      local moveId = def.teaches or def.moveId or tmId
-      local moveDef = movesData[moveId] or {}
+      local info = self:machineInfo(tmId, def)
       pockets[4].items[#pockets[4].items + 1] = {
         id = tmId,
-        label = def.name or tmId,
+        label = (info.tag and info.tag:match("%d")) and (info.tag .. " " .. info.moveName) or info.moveName,
+        tmLabel = info.tag,
         count = qty,
         pocket = "TM_HM",
-        desc = def.desc or (moveDef and moveDef.desc) or "",
+        desc = info.desc,
         isTM = true,
-        teaches = moveId,
-        moveName = (moveDef and moveDef.name) or (moveId and moveId:gsub("_", " ")) or "UNKNOWN",
-        moveType = (moveDef and moveDef.type) or "NORMAL",
-        power = moveDef.power or 0,
-        accuracy = moveDef.accuracy or 100,
-        pp = moveDef.pp or 0,
+        teaches = info.moveId,
+        moveName = info.moveName,
+        moveType = info.moveType,
+        power = info.power,
+        accuracy = info.accuracy,
+        pp = info.pp,
       }
     end
   end
@@ -360,19 +493,28 @@ function Gen2Adapter:getPlayerInfo()
   local jFlags = {}
   local kFlags = {}
 
-  local jBadges = save.johtoBadges or save.badges or {}
-  local kBadges = save.kantoBadges or {}
+  -- The cart writes wJohtoBadges onto player.badges and wKantoBadges onto
+  -- player.kantoBadges, keyed by badge name ("ZEPHYR") or by bit index.
+  -- Root johtoBadges / kantoBadges are the older test shape.
+  local player = save.player or {}
+  local jBadges = player.badges or save.johtoBadges or save.badges or {}
+  local kBadges = player.kantoBadges or save.kantoBadges or {}
 
   info.johtoBadgeNames = { "ZEPHYR", "HIVE", "PLAIN", "FOG", "STORM", "MINERAL", "GLACIER", "RISING" }
   info.kantoBadgeNames = { "BOULDER", "CASCADE", "THUNDER", "RAINBOW", "SOUL", "MARSH", "VOLCANO", "EARTH" }
 
-  for i = 1, 8 do
-    local jb = jBadges[i] or (type(jBadges) == "table" and jBadges[info.johtoBadgeNames[i]])
-    jFlags[i] = (jb == true or (type(jb) == "number" and jb > 0))
-    if jFlags[i] then jCount = jCount + 1 end
+  local function held(tbl, index, name)
+    if type(tbl) ~= "table" then return false end
+    local function on(v)
+      return v == true or (type(v) == "number" and v > 0)
+    end
+    return on(tbl[index]) or on(tbl[name]) or on(tbl[name .. "BADGE"])
+  end
 
-    local kb = kBadges[i] or (type(kBadges) == "table" and kBadges[info.kantoBadgeNames[i]])
-    kFlags[i] = (kb == true or (type(kb) == "number" and kb > 0))
+  for i = 1, 8 do
+    jFlags[i] = held(jBadges, i, info.johtoBadgeNames[i])
+    if jFlags[i] then jCount = jCount + 1 end
+    kFlags[i] = held(kBadges, i, info.kantoBadgeNames[i])
     if kFlags[i] then kCount = kCount + 1 end
   end
 
@@ -387,6 +529,10 @@ function Gen2Adapter:getPlayerInfo()
 
   -- 2. Bank of Mom & Wallet Money
   info.money = tonumber(save.money or (save.player and save.player.money) or info.money or 0) or 0
+  local gender = tostring(info.gender or ""):upper()
+  if gender == "MALE" or gender == "BOY" then info.gender = "MALE"
+  elseif gender == "FEMALE" or gender == "GIRL" then info.gender = "FEMALE"
+  end
   info.momSavings = tonumber(save.momMoney or save.momSavings or (save.mom and save.mom.money) or 0) or 0
   info.momShopping = (save.momShopping == true or (save.mom and save.mom.shopping == true))
 
@@ -481,16 +627,19 @@ end
 function Gen2Adapter:getPokedexEntries(mode, searchType1, searchType2)
   local save = self.game and self.game.save or {}
   local data = self.game and self.game.data or {}
-  local dexOwned = (save.pokedex and save.pokedex.owned) or {}
-  local dexSeen = (save.pokedex and save.pokedex.seen) or {}
+  -- Gen 2 ownership lives on pokedex.caught. `owned` is the Gen 1 name.
+  local dex = save.pokedex or {}
+  local dexCaught = dex.caught or {}
+  local dexOwned = dex.owned or {}
+  local dexSeen = dex.seen or {}
 
   local entries = {}
   local sortMode = mode or "NEW"
 
   for id, def in pairs(data.pokemon or {}) do
     if type(def) == "table" and id ~= "EGG" then
-      local isSeen = dexSeen[id] == true or dexOwned[id] == true
-      local isCaught = dexOwned[id] == true
+      local isCaught = self:dexFlag(dexCaught, id) or self:dexFlag(dexOwned, id)
+      local isSeen = self:dexFlag(dexSeen, id) or isCaught
       local jNum = def.johtoDex or def.newDex or def.id or 0
       local natNum = def.nationalDex or def.oldDex or def.id or 0
 
@@ -530,33 +679,11 @@ function Gen2Adapter:getPokedexEntries(mode, searchType1, searchType2)
 end
 
 function Gen2Adapter:hasSeen(speciesId)
-  local save = self.game and self.game.save or {}
-  local dex = save.pokedex or {}
-  local seenTbl = dex.seen or {}
-  if seenTbl[speciesId] == true then return true end
-  if type(speciesId) == "number" then
-    if seenTbl[tostring(speciesId)] == true then return true end
-  elseif type(speciesId) == "string" then
-    local num = tonumber(speciesId)
-    if num and seenTbl[num] == true then return true end
-    if seenTbl[speciesId:upper()] == true then return true end
-  end
-  return self:hasCaught(speciesId)
+  return BaseAdapter.hasSeen(self, speciesId)
 end
 
 function Gen2Adapter:hasCaught(speciesId)
-  local save = self.game and self.game.save or {}
-  local dex = save.pokedex or {}
-  local ownedTbl = dex.owned or dex.caught or {}
-  if ownedTbl[speciesId] == true then return true end
-  if type(speciesId) == "number" then
-    if ownedTbl[tostring(speciesId)] == true then return true end
-  elseif type(speciesId) == "string" then
-    local num = tonumber(speciesId)
-    if num and ownedTbl[num] == true then return true end
-    if ownedTbl[speciesId:upper()] == true then return true end
-  end
-  return false
+  return BaseAdapter.hasCaught(self, speciesId)
 end
 
 function Gen2Adapter:isNationalDexUnlocked()
@@ -1241,29 +1368,33 @@ function Gen2Adapter:getDexEntry(speciesId)
     weightStr = ("%.1f lbs"):format(entry.weight / 10)
   end
 
-  -- Format Gen 2 multi-page description (text + text2)
-  local desc = nil
-  if entry.text or entry.text2 then
-    local t1 = tostring(entry.text or ""):gsub("<NEXT>", " ")
-    local t2 = tostring(entry.text2 or ""):gsub("<NEXT>", " ")
-    local combined = (t1 .. " " .. t2):gsub("[\f\v\n]+", " "):gsub("%s+", " "):match("^%s*(.-)%s*$")
-    if combined and #combined > 0 then desc = combined end
+  -- Both pages of the cart entry. A text-bank key is resolved the same way Gen 1 does.
+  local page1 = BaseAdapter.plainText(entry.text, data)
+  local page2 = BaseAdapter.plainText(entry.text2, data)
+  local desc = BaseAdapter.plainText(entry.description, data)
+  if page1 and page2 then
+    desc = page1 .. " " .. page2
+  else
+    desc = desc or page1 or page2 or BaseAdapter.plainText(def and def.description, data)
   end
-  if not desc and entry.description then
-    desc = entry.description
+  desc = desc or "A wild POKÉMON discovered across the region."
+
+  local regionalDex = nil
+  local order = dexData.newOrder
+  if type(order) == "table" then
+    for i, id in ipairs(order) do
+      if id == speciesId or id == (def and def.id) then
+        regionalDex = i
+        break
+      end
+    end
   end
-  if not desc and entry.text and data.text then
-    desc = data.text[entry.text]
-  end
-  if not desc and def and def.description then
-    desc = def.description
-  end
-  if type(desc) == "table" then desc = table.concat(desc, " ") end
-  desc = tostring(desc or "A wild POKÉMON discovered across the region."):gsub("[\f\v\n]+", " "):gsub("%s+", " ")
 
   return {
     species = speciesId,
     dex = dexNum,
+    nationalDex = dexNum,
+    regionalDex = regionalDex,
     name = name,
     types = types,
     kind = kind,
@@ -1294,10 +1425,14 @@ function Gen2Adapter:getAreaInfo(speciesId, requestedRegion)
   end
 
   local okHof, HallOfFame = pcall(require, "src.core.gen2.HallOfFame")
+  local playerBadges = save.player and save.player.badges
+  local playerKanto = save.player and save.player.kantoBadges
   local isKantoUnlocked = not not ((okHof and HallOfFame and HallOfFame.hasEntered(save))
-    or (save.kantoBadges and #save.kantoBadges > 0)
+    or BaseAdapter.countFlags(playerKanto) > 0
+    or BaseAdapter.countFlags(save.kantoBadges) > 0
     or (save.hasVisitedKanto == true)
-    or (save.johtoBadges and #save.johtoBadges >= 8))
+    or BaseAdapter.countFlags(playerBadges) >= 8
+    or BaseAdapter.countFlags(save.johtoBadges) >= 8)
 
   local activeRegion = (requestedRegion == "kanto" and isKantoUnlocked) and "kanto" or "johto"
 

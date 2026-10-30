@@ -8,6 +8,12 @@ local ItemDatabase = require("mods.omni_ui.core.ItemDatabase")
 
 local BagRenderer = {}
 
+-- Pocket rows use count, qty, or quantity depending on the generation.
+function BagRenderer.stackCount(item)
+  if type(item) ~= "table" then return nil end
+  return tonumber(item.count or item.qty or item.quantity or item.right or item.displayValue)
+end
+
 function BagRenderer.draw(game, state, w, h, theme, subState, animProgress)
   local adapter = AdapterResolver.resolve(game)
   local playerInfo = adapter:getPlayerInfo()
@@ -115,6 +121,45 @@ function BagRenderer.draw(game, state, w, h, theme, subState, animProgress)
     end
   end
   items = items or {}
+  if adapter and adapter.generation == 2 and adapter.presentBagItem then
+    local shown = {}
+    for i = 1, #items do
+      shown[i] = adapter:presentBagItem(items[i])
+    end
+    items = shown
+  end
+  local function powerText(item)
+    local p = item and item.power
+    if type(p) ~= "number" or p <= 0 then return "--" end
+    return tostring(p)
+  end
+  local function accuracyText(item, withPercent)
+    local a = item and item.accuracy
+    if type(a) ~= "number" or a <= 0 then return "--" end
+    if withPercent then return tostring(a) .. "%" end
+    return tostring(a)
+  end
+  local function itemText(curItem, itemId, def)
+    local own = curItem and (curItem.description or curItem.desc)
+    if type(own) == "string" then
+      own = own:gsub("\\n", " "):gsub("\n", " "):gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
+      if own ~= "" then return own end
+    end
+    return ItemDatabase.getDescription(itemId, def, game)
+  end
+  local function itemPrice(curItem, def)
+    local price = def and tonumber(def.price)
+    if price and price > 0 then return price end
+    local info = curItem and curItem.info
+    price = info and tonumber(info.price)
+    if price and price > 0 then return price end
+    return 0
+  end
+  -- Gen 3 pocket rows store the stack on `qty`. The list badge already reads
+  -- that field; the detail panel has to use the same one.
+  local function heldQty(item)
+    return BagRenderer.stackCount(item)
+  end
   -- Gen 3 bag lists are one row longer than the pocket. That last row is
   -- Cancel, so one-handed play (L confirms) can leave the bag from the list.
   local isGen3Bag = adapter and adapter.generation == 3 and (
@@ -132,6 +177,24 @@ function BagRenderer.draw(game, state, w, h, theme, subState, animProgress)
   end
   local curIdx = state.hollowIndex or (state.items and state.items.hollowIndex) or state.cursor or state.index or 1
 
+  -- Gen 3 carts move the cursor inside a short window (FRLG shows 6 rows)
+  -- and raise `scroll` to reach later entries. The overlay window is taller,
+  -- so clamping that scroll to "already on screen" and writing it back froze
+  -- the cursor after the first pocket's worth of rows.
+  local function viewScroll(count, visibleCount)
+    local scroll = state.scroll or 0
+    if curIdx <= scroll then
+      scroll = math.max(0, curIdx - 1)
+    elseif curIdx > scroll + visibleCount then
+      scroll = curIdx - visibleCount
+    end
+    scroll = math.max(0, math.min(math.max(0, count - visibleCount), scroll))
+    if not isGen3Bag then
+      state.scroll = scroll
+    end
+    return scroll
+  end
+
   if not isNarrow then
     -- =========================================================================
     -- LANDSCAPE / STANDARD 2-PANEL LAYOUT
@@ -143,14 +206,7 @@ function BagRenderer.draw(game, state, w, h, theme, subState, animProgress)
     local rowH = 38
     local visibleCount = math.max(1, math.floor((bodyH - 20) / (rowH + 4)))
 
-    local scroll = state.scroll or 0
-    if curIdx <= scroll then
-      scroll = curIdx - 1
-    elseif curIdx > scroll + visibleCount then
-      scroll = curIdx - visibleCount
-    end
-    scroll = math.max(0, math.min(math.max(0, #items - visibleCount), scroll))
-    state.scroll = scroll
+    local scroll = viewScroll(#items, visibleCount)
 
     local itemW = (#items > visibleCount) and (lw - 26) or (lw - 16)
 
@@ -184,14 +240,14 @@ function BagRenderer.draw(game, state, w, h, theme, subState, animProgress)
         end
 
         if item.isTM or item.teaches then
-          local tmTag = item.id or "TM"
+          local tmTag = item.tmLabel or item.id or "TM"
           local mName = item.moveName or item.label or item.id
           Layout.drawText(tmTag .. " " .. mName, 18, iy + 4, { font = "caption", color = isSel and theme.heading or theme.text, bold = true })
           if item.moveType then
             local Widgets = require("mods.omni_ui.core.Widgets")
             Widgets.drawTypeBadge(item.moveType, 18, iy + 19)
           end
-          local pwrAcc = ("PWR %s  ACC %s"):format(tostring(item.power or 0), tostring(item.accuracy or 100))
+          local pwrAcc = ("PWR %s  ACC %s"):format(powerText(item), accuracyText(item))
           Layout.drawText(pwrAcc, 84, iy + 21, { font = "tiny", color = theme.textDim })
           if count and tostring(count) ~= "" then
             local cntStr = "x" .. tostring(count)
@@ -230,7 +286,7 @@ function BagRenderer.draw(game, state, w, h, theme, subState, animProgress)
       local isKeyed = (def and def.keyItem) or (itemId and type(itemId) == "string" and itemId:find("^HM_") ~= nil)
 
       if curItem.isTM or curItem.teaches then
-        local tmTag = curItem.id or "TM"
+        local tmTag = curItem.tmLabel or curItem.id or "TM"
         local mName = curItem.moveName or curItem.label or curItem.id
         Layout.drawText(tmTag .. ": " .. mName, rx + 18, 64, { font = "headline", color = theme.heading, bold = true })
         if curItem.moveType then
@@ -240,7 +296,7 @@ function BagRenderer.draw(game, state, w, h, theme, subState, animProgress)
           Layout.drawBadge(rx + rw - 110, 64, "TECH MACHINE", { kind = "primary" })
         end
 
-        local desc = curItem.desc or ItemDatabase.getDescription(itemId, def, game)
+        local desc = itemText(curItem, itemId, def)
         local descH = 92
         Layout.drawSlot(rx + 14, 96, rw - 28, descH, { color = theme.surfaceHigh, borderColor = theme.border, radius = 6 })
         Layout.drawTextWrapped(desc, rx + 24, 108, rw - 48, { font = "body", color = theme.textDim })
@@ -250,9 +306,9 @@ function BagRenderer.draw(game, state, w, h, theme, subState, animProgress)
         Layout.drawSlot(rx + 14, specSlotY, rw - 28, specSlotH, { color = theme.surfaceHigh, borderColor = theme.border, radius = 6 })
 
         local colW = math.floor((rw - 36) / 3)
-        Layout.drawStatMetric(rx + 18, specSlotY + 10, colW, tostring(curItem.power or "--"), "power")
-        Layout.drawStatMetric(rx + 18 + colW, specSlotY + 10, colW, tostring(curItem.accuracy or 100) .. "%", "accuracy")
-        Layout.drawStatMetric(rx + 18 + colW * 2, specSlotY + 10, colW, ("x %02d"):format(curItem.count or 1), "in bag")
+        Layout.drawStatMetric(rx + 18, specSlotY + 10, colW, powerText(curItem), "power")
+        Layout.drawStatMetric(rx + 18 + colW, specSlotY + 10, colW, accuracyText(curItem, true), "accuracy")
+        Layout.drawStatMetric(rx + 18 + colW * 2, specSlotY + 10, colW, ("x %02d"):format(heldQty(curItem) or 1), "in bag")
       else
         Layout.drawText(label, rx + 18, 64, { font = "headline", color = theme.heading, bold = true })
 
@@ -286,7 +342,7 @@ function BagRenderer.draw(game, state, w, h, theme, subState, animProgress)
           Layout.drawBadge(rx + rw - 120, 64, categoryTag, { kind = catKind })
         end
 
-        local desc = ItemDatabase.getDescription(itemId, def, game)
+        local desc = itemText(curItem, itemId, def)
         local descH = 92
         Layout.drawSlot(rx + 14, 96, rw - 28, descH, { color = theme.surfaceHigh, borderColor = theme.border, radius = 6 })
         Layout.drawTextWrapped(desc, rx + 24, 108, rw - 48, { font = "body", color = theme.textDim })
@@ -295,8 +351,9 @@ function BagRenderer.draw(game, state, w, h, theme, subState, animProgress)
         local specSlotH = 64
         Layout.drawSlot(rx + 14, specSlotY, rw - 28, specSlotH, { color = theme.surfaceHigh, borderColor = theme.border, radius = 6 })
 
-        local countStr = (curItem.count and ("x %02d"):format(curItem.count)) or (isKeyed and "UNIQUE") or "x 01"
-        local sellPrice = math.floor(((def and def.price) or 0) / 2)
+        local qty = heldQty(curItem)
+        local countStr = (qty and ("x %02d"):format(qty)) or (isKeyed and "UNIQUE") or "x 01"
+        local sellPrice = math.floor(itemPrice(curItem, def) / 2)
         local valStr = isKeyed and "NO SALE" or (sellPrice > 0 and ("¥%d"):format(sellPrice) or "¥0")
         local colW = math.floor((rw - 36) / 2)
 
@@ -320,14 +377,7 @@ function BagRenderer.draw(game, state, w, h, theme, subState, animProgress)
     local rowH = 34
     local visibleCount = math.max(1, math.floor((listH - 16) / (rowH + 3)))
 
-    local scroll = state.scroll or 0
-    if curIdx <= scroll then
-      scroll = curIdx - 1
-    elseif curIdx > scroll + visibleCount then
-      scroll = curIdx - visibleCount
-    end
-    scroll = math.max(0, math.min(math.max(0, #items - visibleCount), scroll))
-    state.scroll = scroll
+    local scroll = viewScroll(#items, visibleCount)
 
     local itemW = w - 16
 
@@ -379,7 +429,7 @@ function BagRenderer.draw(game, state, w, h, theme, subState, animProgress)
 
       local itemId = curItem.value or curItem.id
       local def = (curItem.def) or (itemId and game.data and game.data.items and game.data.items[itemId])
-      local desc = ItemDatabase.getDescription(itemId, def, game)
+      local desc = itemText(curItem, itemId, def)
 
       Layout.drawTextWrapped(desc, 14, detailY + 30, w - 28, { font = "caption", color = theme.textDim })
     elseif curItem and curItem.cancel then
@@ -445,7 +495,7 @@ function BagRenderer.draw(game, state, w, h, theme, subState, animProgress)
 
     local curItem = items[curIdx]
     local itemName = curItem and (curItem.label or curItem.name or curItem.id) or "ITEM"
-    local count = curItem and (curItem.count or curItem.right or curItem.displayValue)
+    local count = heldQty(curItem)
 
     local modalW = isNarrow and math.min(w - 32, 280) or 260
     local itemH = 38

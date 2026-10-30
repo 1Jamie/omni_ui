@@ -180,6 +180,28 @@ local CANONICAL_DESCRIPTIONS = {
   UPGRADE = "A transparent device produced by Silph Co. used to evolve Porygon.",
 }
 
+local function usableItemText(d)
+  if type(d) == "table" then d = table.concat(d, " ") end
+  if type(d) ~= "string" then return nil end
+  d = d:gsub("<NEXT>", " "):gsub("<LINE>", " "):gsub("<PAGE>", " "):gsub("\n", " "):gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
+  if d == "" or d == "?" or d == "???" or d == "--" or d == "---" then return nil end
+  return d
+end
+
+local function taughtMove(itemDef)
+  if not itemDef then return nil, nil end
+  if itemDef.machine and type(itemDef.machine.move) == "string" and itemDef.machine.move ~= "" then
+    return itemDef.machine.move, itemDef.name or itemDef.machine.kind or "TM"
+  end
+  if type(itemDef.teaches) == "string" and itemDef.teaches ~= "" then
+    return itemDef.teaches, itemDef.tmLabel or itemDef.name or "TM"
+  end
+  if type(itemDef.moveId) == "string" and itemDef.moveId ~= "" then
+    return itemDef.moveId, itemDef.tmLabel or itemDef.name or "TM"
+  end
+  return nil, nil
+end
+
 function ItemDatabase.getDescription(itemId, def, game)
   if not itemId then return "A useful item stored in your inventory." end
   local idStr = tostring(itemId)
@@ -193,14 +215,11 @@ function ItemDatabase.getDescription(itemId, def, game)
     end
   end
 
-  -- 2. Explicit description in item definition
-  if def and (def.description or def.flavorText or def.desc) then
-    local d = def.description or def.flavorText or def.desc
-    if type(d) == "table" then d = table.concat(d, " ") end
-    if type(d) == "string" and d ~= "" then
-      d = d:gsub("<NEXT>", " "):gsub("<LINE>", " "):gsub("<PAGE>", " "):gsub("\n", " "):gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
-      return d
-    end
+  -- 2. Explicit description in item definition. A "?" placeholder (a TM
+  -- whose item text never extracted) falls through to the move it teaches.
+  local explicit = def and (usableItemText(def.description) or usableItemText(def.flavorText) or usableItemText(def.desc))
+  if explicit and not (def and (def.teaches or def.moveId or (def.machine and def.machine.move))) then
+    return explicit
   end
 
   -- 3. Mod-registered item table lookup
@@ -227,23 +246,27 @@ function ItemDatabase.getDescription(itemId, def, game)
   local moveKey = nil
   local machineLabel = nil
 
-  if def and def.machine and def.machine.move then
-    moveKey = def.machine.move
-    machineLabel = def.name or def.machine.kind or "TM"
-  elseif game and game.data and game.data.items then
-    -- Try finding matching TM/HM in game data
-    local directDef = game.data.items[itemId]
-    if directDef and directDef.machine and directDef.machine.move then
-      moveKey = directDef.machine.move
-      machineLabel = directDef.name or "TM"
-    else
+  moveKey, machineLabel = taughtMove(def)
+  if not moveKey and game and game.data and game.data.items then
+    local directDef = game.data.items[itemId] or game.data.items[upperId]
+    moveKey, machineLabel = taughtMove(directDef)
+    if not moveKey then
       for k, itm in pairs(game.data.items) do
-        if (itm.name == idStr or k == upperId) and itm.machine and itm.machine.move then
-          moveKey = itm.machine.move
-          machineLabel = itm.name or "TM"
-          break
+        if itm.name == idStr or k == upperId or k == itemId then
+          local mk, ml = taughtMove(itm)
+          if mk then
+            moveKey, machineLabel = mk, ml
+            break
+          end
         end
       end
+    end
+  end
+  if not moveKey then
+    local fromId = upperId:match("^TM_([A-Z][A-Z0-9_]*)$") or upperId:match("^HM_([A-Z][A-Z0-9_]*)$")
+    if fromId and not fromId:match("^%d+$") then
+      moveKey = fromId
+      machineLabel = upperId:match("^HM_") and "HM" or "TM"
     end
   end
 
@@ -251,6 +274,14 @@ function ItemDatabase.getDescription(itemId, def, game)
     local moveName = moveKey:gsub("_", " ")
     local mDef = game and game.data and game.data.moves and game.data.moves[moveKey]
     if mDef and mDef.name then moveName = mDef.name end
+    if mDef then
+      local scrubbed = {}
+      for k, v in pairs(mDef) do scrubbed[k] = v end
+      if not usableItemText(scrubbed.description) then scrubbed.description = nil end
+      if not usableItemText(scrubbed.desc) then scrubbed.desc = nil end
+      if not usableItemText(scrubbed.flavorText) then scrubbed.flavorText = nil end
+      mDef = scrubbed
+    end
     local moveDesc = MoveDatabase.getDescription(moveKey, mDef, game)
     if moveDesc and not moveDesc:find("A attack technique") then
       return ("Teaches the move %s.\n%s"):format(moveName, moveDesc)
@@ -262,6 +293,17 @@ function ItemDatabase.getDescription(itemId, def, game)
   -- 6. Fallback TM/HM regex detection (e.g. TM34, HM02)
   local tmNum = upperId:match("^TM_?(%d+)$")
   local hmNum = upperId:match("^HM_?(%d+)$")
+  -- Gen 3 items are numeric ids (or pack names). Their sentences live in the
+  -- item pack, not the Gen 1 item table. Without this, the bag prints the
+  -- PC-storage fallback for every FireRed, LeafGreen, and Hoenn item.
+  local okItems, ItemsData = pcall(require, "src.core.game3.items_data")
+  if okItems and ItemsData and ItemsData.description then
+    local okDesc, packed = pcall(ItemsData.description, itemId)
+    if not okDesc then okDesc, packed = pcall(ItemsData.description, upperId) end
+    local packedText = okDesc and usableItemText(packed) or nil
+    if packedText then return packedText end
+  end
+
   if tmNum or hmNum then
     local label = tmNum and ("TM" .. tmNum) or ("HM" .. hmNum)
     if game and game.data and game.data.items then
@@ -277,6 +319,7 @@ function ItemDatabase.getDescription(itemId, def, game)
     return ("Technical machine %s. Teaches a combat move to compatible Pokémon."):format(label)
   end
 
+  if explicit then return explicit end
   return "Item stored safely within the Pokémon terminal system."
 end
 

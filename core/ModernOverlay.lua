@@ -1728,8 +1728,8 @@ function ModernOverlay.attachMainMenuControls(state, game)
 
   local origChoose = state.choose
   if origChoose then
-    state.choose = function(self, value)
-      origChoose(self, value)
+    state.choose = function(self, value, index)
+      origChoose(self, value, index)
       if value == "continue" then
         self.phase = "confirm"
         self.isConfirm = true
@@ -2200,6 +2200,21 @@ function ModernOverlay.updateProgress(kind, activeState, subState, isFullScreen)
   end
   ModernOverlay.transition.lastTime = now
 
+  if not Layout.animationsEnabled() then
+    ModernOverlay.closingModal = nil
+    local key = kind .. "_" .. tostring(activeState)
+    ModernOverlay.screenProgress[key] = { progress = 1.0 }
+    ModernOverlay.lastActiveKind = kind
+    ModernOverlay.lastActiveState = activeState
+    ModernOverlay.lastSubState = subState
+    ModernOverlay.lastActiveTime = now
+    if kind == "dialogue" then
+      ModernOverlay.lastDialogueTime = now
+    end
+    ModernOverlay.transition.progress = 1.0
+    return 1.0, dt
+  end
+
   -- Detect transition from save -> start_menu to trigger smooth shrink/fade exit
   if ModernOverlay.lastActiveKind == "save" and kind == "start_menu" and ModernOverlay.lastActiveState then
     ModernOverlay.closingModal = {
@@ -2360,6 +2375,7 @@ function ModernOverlay.draw(game, viewport)
   local isFullScreen = not isOverlayOnly
 
   local rawP, dt = ModernOverlay.updateProgress(kind, activeState, subState, isFullScreen)
+  local animationsOn = Layout.animationsEnabled()
   local expoVal = easeExpoOut(rawP)
   local backVal = easeBackOut(rawP, 1.12)
 
@@ -2400,7 +2416,7 @@ function ModernOverlay.draw(game, viewport)
     -- A hair darker (0.72 vs 0.60) to distinctly emphasize exit to main menu dialog
     local maxAlpha = hasExitDialog and math.min(0.85, baseDim + 0.12) or baseDim
 
-    local sh = ModernOverlay.getWaveShader()
+    local sh = animationsOn and ModernOverlay.getWaveShader() or nil
     local drewShader = false
     if sh and pcall(function()
       local waveWidth = math.max(180, math.floor(vw * 0.45))

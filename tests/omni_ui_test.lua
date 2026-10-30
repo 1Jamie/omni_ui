@@ -242,6 +242,46 @@ promptBox.choice(false)
 T.eq(#fakeStack.states, 1, "Stack popped SavePanel and TextBox back down to 1")
 T.eq(fakeStack:top(), mockMenu, "StartMenu remains top of stack when closing Save via NO")
 
+-- Gen 3 pause SAVE must keep the native handler. The Gen 1 panel calls
+-- math.floor on playTime (a {hours,minutes,seconds} table) and pushes
+-- game.stack, which Game3 does not have, so the row never opens SaveMenu.
+do
+  local versions = { "firered", "leafgreen", "ruby", "sapphire", "emerald" }
+  for _, ver in ipairs(versions) do
+    local opened = false
+    local native = function() opened = true end
+    local g3 = {
+      generation = 3,
+      gameVersion = ver,
+      session = { version = ver, playtime = { hours = 1, minutes = 2, seconds = 3 } },
+      save = { playTime = { hours = 1, minutes = 2, seconds = 3 } },
+      saveGame = function() return true end,
+    }
+    local items = {
+      { id = "save", label = "SAVE", onSelect = native },
+    }
+    local out = run.loader.hooks:call("ui.start_menu.items", function(_, list) return list end, g3, items)
+    T.eq(out[1].onSelect, native, ver .. " SAVE keeps the native save handler")
+    local ok, err = pcall(out[1].onSelect)
+    T.eq(ok, true, ver .. " SAVE handler runs: " .. tostring(err))
+    T.eq(opened, true, ver .. " SAVE opens the native save menu")
+    opened = false
+  end
+
+  local opened = false
+  local native = function() opened = true end
+  local bare = {
+    generation = 3,
+    saveGame = function() return true end,
+  }
+  local out = run.loader.hooks:call("ui.start_menu.items", function(_, list) return list end, bare, {
+    { id = "save", label = "SAVE", onSelect = native },
+  })
+  T.eq(out[1].onSelect, native, "Gen 3 SAVE without a version string keeps the native handler")
+  out[1].onSelect()
+  T.eq(opened, true, "Gen 3 SAVE without a version string still runs")
+end
+
 -- Test ModernOverlay.drawModManager across all sub-screens
 do
   local Theme = require("mods.omni_ui.core.Theme")
@@ -852,6 +892,32 @@ local okBagDraw = pcall(function()
 end)
 T.eq(okBagDraw, true, "drawBag renders 20-item scrollable inventory cleanly with dynamic scrollbar")
 T.eq(fakeBagState.scroll > 0, true, "Bag state dynamically computes and syncs visible scroll window")
+
+-- FireRed's cart bag raises scroll to walk a list longer than its 6-row
+-- window. The overlay shows those later rows already, and must not write
+-- the cart scroll back down or the cursor freezes at the first pocket's length.
+do
+  local BagRenderer = require("mods.omni_ui.renderers.BagRenderer")
+  local rows = {}
+  for i = 1, 12 do
+    rows[i] = { id = 100 + i, name = "KEY " .. i, qty = 1 }
+  end
+  local versions = { "firered", "leafgreen", "ruby", "sapphire", "emerald" }
+  for _, ver in ipairs(versions) do
+    local bag = {
+      pocketIdx = 2,
+      cursor = 8,
+      scroll = 4,
+      mode = "list",
+      list = function() return rows end,
+      currentPocket = function() return "KEY_ITEMS" end,
+    }
+    local game = { gameVersion = ver, session = { version = ver, bag = { pockets = {} } } }
+    local ok = pcall(BagRenderer.draw, game, bag, 800, 600, Theme.get())
+    T.eq(ok, true, ver .. " bag still draws a long pocket")
+    T.eq(bag.scroll, 4, ver .. " bag draw leaves each pocket's cart scroll alone")
+  end
+end
 
 -- Test Shop interactive scrolling and quantity stepper substate
 local fakeShopItems = {}
@@ -2497,6 +2563,16 @@ do
     T.eq(tmDesc:find("MEGA PUNCH") ~= nil, true, "TM description includes move name")
     T.eq(tmDesc:find("powerful punch") ~= nil, true, "TM description includes move description")
 
+    local BagRenderer = require("mods.omni_ui.renderers.BagRenderer")
+    T.eq(BagRenderer.stackCount({ id = 4, qty = 5, name = "POKé BALL" }), 5, "Gen 3 bag detail reads qty when count is absent")
+    T.eq(BagRenderer.stackCount({ id = "POTION", count = 3 }), 3, "Bag detail still reads count")
+
+    local juiceDesc = ItemDatabase.getDescription("BERRY JUICE")
+    T.eq(juiceDesc:find("pure juice") ~= nil, true, "Gen 3 Berry Juice uses the item pack description")
+    T.eq(juiceDesc:find("terminal") == nil, true, "Gen 3 item text is not the PC storage fallback")
+    local potionDesc = ItemDatabase.getDescription(13)
+    T.eq(potionDesc:find("20 points") ~= nil, true, "Gen 3 Potion id uses the item pack description")
+
     -- 8. SummaryRenderer Tab 2 (Moves) Multi-Move Inspection
     local testMon = {
       species = "CHARIZARD",
@@ -2764,6 +2840,93 @@ do
     }
     local okDrawLoad = pcall(MainMenuRenderer.draw, specGame, loadState, 800, 600, t)
     T.eq(okDrawLoad, true, "MainMenuRenderer renders load screen with 6 badges")
+
+    local rby = MainMenuRenderer.preview({ gameVersion = "red" }, {
+      items = { { label = "CONTINUE" } },
+      save = {
+        player = { name = "ASH" },
+        inventory = { BOULDERBADGE = true, CASCADEBADGE = true },
+        pokedex = { owned = { CHARMANDER = true, SQUIRTLE = false, BULBASAUR = true } },
+        playTime = 3665,
+        party = {
+          { species = "CHARMANDER", nickname = "FLAME", level = 8, hp = 0, maxHp = 22, stats = { hp = 22 } },
+        },
+      },
+    })
+    T.eq(rby.generation, 1, "Red continue card is generation 1")
+    T.eq(rby.name, "ASH", "Red continue card uses the player name")
+    T.eq(rby.badges, 2, "Red continue card counts inventory badges")
+    T.eq(rby.caught, 2, "Red continue card counts owned dex flags and skips false")
+    T.eq(rby.playTimeString, "1:01", "Red continue card reads play time in seconds")
+    T.eq(#rby.party, 1, "Red continue card lists the party")
+    T.eq(rby.party[1].name, "FLAME", "Red continue card shows the nickname")
+    T.eq(rby.party[1].hp, 0, "Red fainted Pokémon stays at 0 HP")
+    T.eq(rby.party[1].maxHp, 22, "Red fainted Pokémon keeps its max HP")
+
+    local gsc = MainMenuRenderer.preview({ gameVersion = "crystal" }, {
+      save = {
+        player = { name = "CRYS", badges = { ZEPHYR = true, HIVE = true }, kantoBadges = { BOULDER = true } },
+        pokedex = { owned = {}, caught = { [155] = true, [158] = true, [25] = false } },
+        playTime = { hours = 3, minutes = 5 },
+        party = {
+          { species = "CYNDAQUIL", level = 6, hp = 0, maxHp = 19, stats = { hp = 19 } },
+          { species = "EGG", isEgg = true, eggCycles = 10 },
+        },
+      },
+    })
+    T.eq(gsc.generation, 2, "Crystal continue card is generation 2")
+    T.eq(gsc.name, "CRYS", "Crystal continue card uses player.name")
+    T.eq(gsc.badges, 3, "Crystal continue card counts Johto and Kanto badges")
+    T.eq(gsc.caught, 2, "Crystal continue card counts caught, not an empty owned table")
+    T.eq(gsc.playTimeString, "3:05", "Crystal continue card reads the play-time table")
+    T.eq(gsc.party[1].name, "CYNDAQUIL", "Crystal party uses the species name")
+    T.eq(gsc.party[1].hp, 0, "Crystal fainted Pokémon stays at 0 HP")
+    T.eq(gsc.party[2].isEgg, true, "Crystal party keeps the egg")
+    T.eq(gsc.party[2].name, "EGG", "Crystal egg is labeled EGG")
+
+    local frlg = MainMenuRenderer.preview({ gameVersion = "firered" }, {
+      hasContinue = true,
+      continueInfo = { name = "RED", badges = 8, dexCount = 150, hours = 25, minutes = 40 },
+      save = {
+        name = "RED",
+        engine = "game3",
+        version = "firered",
+        party = {
+          { species = 4, nickname = "ACE", level = 16, hp = 0, maxHp = 41, stats = { hp = 41, attack = 20 } },
+        },
+      },
+    })
+    T.eq(frlg.generation, 3, "FireRed continue card is generation 3")
+    T.eq(frlg.name, "RED", "FireRed continue card uses the continue header name")
+    T.eq(frlg.badges, 8, "FireRed continue card uses the header badge count")
+    T.eq(frlg.caught, 150, "FireRed continue card uses the header dex count")
+    T.eq(frlg.playTimeString, "25:40", "FireRed continue card uses the header clock")
+    T.eq(#frlg.party, 1, "FireRed continue card still lists the party from the save")
+    T.eq(frlg.party[1].name, "ACE", "FireRed party shows the nickname")
+    T.eq(frlg.party[1].hp, 0, "FireRed fainted Pokémon stays at 0 HP")
+    T.eq(frlg.party[1].maxHp, 41, "FireRed fainted Pokémon keeps its max HP")
+
+    local rse = MainMenuRenderer.preview({ gameVersion = "emerald" }, {
+      hasContinue = true,
+      info = { name = "MAY", badges = 2, dexCount = 12, hours = 1, minutes = 2 },
+      save = {
+        name = "MAY",
+        engine = "game3",
+        version = "emerald",
+        dex = { caught = { [1] = true, [2] = true, [3] = true, [252] = true } },
+        party = {
+          { species = 277, nickname = "LEAF", level = 9, hp = 18, maxHp = 28, stats = { hp = 28, attack = 12 } },
+        },
+      },
+    })
+    T.eq(rse.generation, 3, "Emerald continue card is generation 3")
+    T.eq(rse.name, "MAY", "Emerald continue card uses the Hoenn header name")
+    T.eq(rse.badges, 2, "Emerald continue card uses the Hoenn badge count")
+    T.eq(rse.caught, 12, "Emerald continue card uses the regional dex count from the header")
+    T.eq(rse.playTimeString, "1:02", "Emerald continue card uses the header clock")
+    T.eq(rse.party[1].name, "LEAF", "Emerald party shows the nickname")
+    T.eq(rse.party[1].hp, 18, "Emerald party keeps the current HP")
+    T.eq(rse.party[1].level, 9, "Emerald party keeps the level")
   end
 
   -- Test ModManagerRenderer Sliding Window Scrolling
@@ -2806,6 +2969,120 @@ do
   local partyReturnedState = { party = { testMon }, index = 1, submenu = nil, subItems = { { label = "STATS" }, { label = "SWITCH" } } }
   local okPartyReturn = pcall(PartyRenderer.draw, specGame, partyReturnedState, 800, 600, t)
   T.eq(okPartyReturn, true, "PartyRenderer returns to list mode without lingering submenu modal")
+
+  -- Field-move confirms stay visible while the overlay hides the native box.
+  -- Gen 3 Teleport/Dig (FireRed, LeafGreen, Emerald) are a party yes/no.
+  -- Ruby and Sapphire run those two immediately, so they never open the box.
+  -- Gen 1 and Gen 2 print the line, and sometimes a Yes/No, on top of the party.
+  do
+    local drawn = {}
+    local origText = Layout.drawText
+    local origButton = Layout.drawButton
+    Layout.drawText = function(text, ...)
+      drawn[#drawn + 1] = tostring(text)
+      return origText(text, ...)
+    end
+    Layout.drawButton = function(x, y, w, h, label, ...)
+      drawn[#drawn + 1] = "BTN:" .. tostring(label)
+      return origButton(x, y, w, h, label, ...)
+    end
+    local function painted(fragment)
+      return table.concat(drawn, "\n"):find(fragment, 1, true) ~= nil
+    end
+    local function resetPaint()
+      for i = #drawn, 1, -1 do drawn[i] = nil end
+    end
+
+    local partyMon = {
+      species = "ABRA", nickname = "ABRA", level = 16,
+      hp = 40, maxHp = 40, moves = { { id = "TELEPORT" } },
+    }
+    local versions = { "firered", "leafgreen", "emerald" }
+    local prompts = {
+      { move = "teleport", text = "Return to the healing spot?\nPALLET TOWN" },
+      { move = "dig", text = "Escape from here and return to\nVIRIDIAN FOREST" },
+      { move = "dig-rse", text = "Escape from here?" },
+    }
+    for _, version in ipairs(versions) do
+      for _, prompt in ipairs(prompts) do
+        resetPaint()
+        local menu = {
+          party = { partyMon }, cursor = 1, _party = { partyMon }, ACTIONS = {},
+          mode = "yesno",
+          _yesNoPrompt = prompt.text,
+          _yesNoCursor = 1,
+          _yesNoLabels = { "YES", "NO" },
+          _session = { version = version },
+        }
+        local okDraw = pcall(PartyRenderer.draw, specGame, menu, 800, 600, t)
+        T.eq(okDraw, true, version .. " " .. prompt.move .. " confirm draws")
+        local firstLine = prompt.text:match("^[^\n]+")
+        T.eq(painted(firstLine), true, version .. " " .. prompt.move .. " shows its question")
+        T.eq(painted("BTN:YES"), true, version .. " " .. prompt.move .. " shows YES")
+        T.eq(painted("BTN:NO"), true, version .. " " .. prompt.move .. " shows NO")
+      end
+    end
+
+    resetPaint()
+    local noCursor = {
+      party = { partyMon }, cursor = 1, _party = { partyMon }, ACTIONS = {},
+      mode = "yesno",
+      _yesNoPrompt = "Return to the healing spot?\nPALLET TOWN",
+      _yesNoCursor = 2,
+      _yesNoLabels = { "YES", "NO" },
+    }
+    local selected = {}
+    local origButton2 = Layout.drawButton
+    Layout.drawButton = function(x, y, w, h, label, opts, ...)
+      if opts and opts.selected then selected[#selected + 1] = tostring(label) end
+      return origButton2(x, y, w, h, label, opts, ...)
+    end
+    pcall(PartyRenderer.draw, specGame, noCursor, 800, 600, t)
+    T.eq(selected[#selected] == "NO" or table.concat(selected, ","):find("NO", 1, true) ~= nil, true,
+      "yes/no highlight follows the No cursor")
+    Layout.drawButton = origButton2
+
+    resetPaint()
+    local refusal = {
+      party = { partyMon }, cursor = 1, _party = { partyMon }, ACTIONS = {},
+      mode = "message",
+      _messageText = "Can't use that here.",
+    }
+    local okRefusal = pcall(PartyRenderer.draw, specGame, refusal, 800, 600, t)
+    T.eq(okRefusal, true, "field-move refusal message draws")
+    T.eq(painted("Can't use that here."), true, "field-move refusal text is visible")
+    T.eq(painted("BTN:YES"), false, "a refusal message is not a yes/no")
+
+    resetPaint()
+    local warpBox = {
+      isTextBox = true,
+      pages = { { "Warp to the last\nPOKéMON CENTER." } },
+      pageIndex = 1, lineIndex = 2, charIndex = 40, waiting = true,
+    }
+    local gen1Party = { party = { partyMon }, index = 1, isPartyMenu = true }
+    local gen1 = { stack = { states = { gen1Party, warpBox } }, save = specGame.save, data = specGame.data }
+    local okWarp = pcall(PartyRenderer.draw, gen1, gen1Party, 800, 600, t, warpBox)
+    T.eq(okWarp, true, "Gen 1 teleport text draws over the party")
+    T.eq(painted("Warp to the last"), true, "Gen 1 teleport question is visible")
+
+    resetPaint()
+    local cutBox = {
+      isTextBox = true,
+      pages = { { "This tree can be\nCUT!" } },
+      pageIndex = 1, lineIndex = 2, charIndex = 40, waiting = true, instant = true,
+    }
+    local cutChoice = { isChoiceBox = true, labels = { "YES", "NO" }, index = 1, onChoose = function() end }
+    local gen2Party = { party = { partyMon }, index = 1 }
+    local gen2 = { stack = { states = { gen2Party, cutBox, cutChoice } }, save = specGame.save, data = specGame.data }
+    local okCut = pcall(PartyRenderer.draw, gen2, gen2Party, 800, 600, t, cutChoice)
+    T.eq(okCut, true, "Gen 2 field-move question draws over the party")
+    T.eq(painted("This tree can be"), true, "Gen 2 cut question is visible")
+    T.eq(painted("BTN:YES"), true, "Gen 2 cut question shows YES")
+    T.eq(painted("BTN:NO"), true, "Gen 2 cut question shows NO")
+
+    Layout.drawText = origText
+    Layout.drawButton = origButton
+  end
 
   -- Test TownMapRenderer in Portrait Mobile (Stacked map + details with guaranteed non-overlapping bounds)
   local mapState = {
@@ -3363,12 +3640,95 @@ do
       T.eq(tmEntry.moveName, "HEADBUTT", "TM02 enriched with moveName HEADBUTT")
       T.eq(tmEntry.moveType, "NORMAL", "TM02 enriched with moveType NORMAL")
       T.eq(tmEntry.power, 70, "TM02 enriched with power 70")
+      T.eq(tmEntry.tmLabel, "TM02", "TM02 keeps its printed TM number")
+      T.eq(tmEntry.desc:find("HEADBUTT") ~= nil or tmEntry.desc:find("[Hh]eadbutt") ~= nil, true, "TM02 description comes from the move")
+
+      -- A pack row uses the object id (`TM_DIG`) and a placeholder item
+      -- description. The view has to show the TM number, the move, and the
+      -- move's own power and text, and leave the pack row itself alone.
+      mockGame2.data.items.TM_DIG = {
+        id = "TM_DIG", name = "TM28", tmLabel = "TM28", pocket = "TM_HM",
+        teaches = "DIG", description = "?",
+      }
+      mockGame2.data.moves.DIG = {
+        name = "DIG", type = "GROUND", power = 80, accuracy = 100, pp = 10,
+        description = "Digs underground, then strikes.",
+      }
+      mockGame2.data.items.TM_SWAGGER = {
+        id = "TM_SWAGGER", tmLabel = "TM34", pocket = "TM_HM",
+        teaches = "SWAGGER", description = "?",
+      }
+      mockGame2.data.moves.SWAGGER = {
+        name = "SWAGGER", type = "NORMAL", power = 0, accuracy = 90, pp = 15,
+        description = "?",
+      }
+      mockGame2.data.items.TM_SHADOW_BALL = {
+        id = "TM_SHADOW_BALL", name = "TM30", tmLabel = "TM30", pocket = "TM_HM",
+      }
+      mockGame2.data.moves.SHADOW_BALL = {
+        name = "SHADOW BALL", type = "GHOST", power = 80, accuracy = 100, pp = 15,
+        description = "Hurls a shadowy blob.",
+      }
+      local packRow = { id = "TM_DIG", name = "TM_DIG", teaches = "TM_DIG", count = 1 }
+      local digView = adapter:presentBagItem(packRow)
+      T.eq(digView.tmLabel, "TM28", "TM_DIG view uses the printed TM number")
+      T.eq(digView.moveName, "DIG", "TM_DIG view uses the move name")
+      T.eq(digView.label, "TM28 DIG", "TM_DIG label is the number plus the move")
+      T.eq(digView.power, 80, "TM_DIG power comes from the move")
+      T.eq(digView.accuracy, 100, "TM_DIG accuracy comes from the move")
+      T.eq(digView.desc, "Digs underground, then strikes.", "TM_DIG description is the move text")
+      T.eq(packRow.teaches, "TM_DIG", "presentBagItem leaves the pack row untouched")
+      local swaggerView = adapter:presentBagItem({ id = "TM_SWAGGER", count = 1 })
+      T.eq(swaggerView.power, 0, "TM_SWAGGER keeps a real power of 0")
+      T.eq(swaggerView.accuracy, 90, "TM_SWAGGER accuracy is 90, not the 100 fallback")
+      T.eq(swaggerView.desc:find("Enrages") ~= nil or swaggerView.desc:find("confusion") ~= nil, true, "TM_SWAGGER description is not the placeholder")
+      local shadowView = adapter:presentBagItem({ id = "TM_SHADOW_BALL", count = 1 })
+      T.eq(shadowView.moveName, "SHADOW BALL", "TM_SHADOW_BALL move is read from the object id")
+      T.eq(shadowView.power, 80, "TM_SHADOW_BALL power is 80")
+      T.eq(shadowView.desc, "Hurls a shadowy blob.", "TM_SHADOW_BALL description is the move text")
+      local ItemDatabase = require("mods.omni_ui.core.ItemDatabase")
+      local digInfo = ItemDatabase.getDescription("TM_DIG", mockGame2.data.items.TM_DIG, mockGame2)
+      T.eq(digInfo:find("Digs underground") ~= nil, true, "Item info for TM_DIG uses the move description")
 
       -- F. Test Player Info, 16 Badges & Mom's Savings
       local pInfo = adapter:getPlayerInfo()
       T.eq(pInfo.badges, 12, "Player has 12 total badges (8 Johto + 4 Kanto)")
       T.eq(pInfo.johtoBadges, 8, "Player has 8 Johto badges")
       T.eq(pInfo.kantoBadges, 4, "Player has 4 Kanto badges")
+
+      -- Real Gold writes badges by name on the player, and the dex as
+      -- species -> true. Array length of either table is zero.
+      local gearGame = {
+        gameVersion = "gold",
+        save = {
+          player = {
+            name = "GOLD",
+            money = 4321,
+            badges = { ZEPHYR = true, HIVE = true, PLAIN = true },
+            kantoBadges = { BOULDER = true },
+          },
+          pokedex = {
+            seen = { CYNDAQUIL = true, TOTODILE = true, CHIKORITA = true, SENTRET = true },
+            caught = { CYNDAQUIL = true, TOTODILE = true },
+          },
+        },
+        data = mockGame2.data,
+      }
+      local gearInfo = Gen2Adapter.new(gearGame):getPlayerInfo()
+      T.eq(gearInfo.badges, 4, "Pokégear badge total reads player.badges and player.kantoBadges")
+      T.eq(gearInfo.johtoBadges, 3, "Johto badge count is the named player.badges set")
+      T.eq(gearInfo.kantoBadges, 1, "Kanto badge count is player.kantoBadges")
+      T.eq(gearInfo.pokedex.seen, 4, "Pokédex seen counts the species map")
+      T.eq(gearInfo.pokedex.owned, 2, "Pokédex owned reads pokedex.caught")
+      T.eq(gearInfo.johtoBadgeFlags[1], true, "ZEPHYR lights badge slot 1")
+      T.eq(gearInfo.johtoBadgeFlags[4], false, "Unheld FOG stays dark")
+      local gearEntries = Gen2Adapter.new(gearGame):getPokedexEntries("NEW")
+      local cynda
+      for _, entry in ipairs(gearEntries) do
+        if entry.id == "CYNDAQUIL" then cynda = entry break end
+      end
+      T.eq(cynda and cynda.seen, true, "Caught Johto species is seen in the dex")
+      T.eq(cynda and cynda.caught, true, "Caught Johto species is owned via pokedex.caught")
       T.eq(pInfo.momSavings, 15000, "Mom savings balance is $15,000")
       T.eq(pInfo.momShopping, true, "Mom shopping flag is true")
       T.eq(type(pInfo.rtc), "table", "RTC table populated")
@@ -4364,6 +4724,28 @@ do
         T.eq(cyndaEntry.weight, "17.4 lbs", "Gen 2 getDexEntry formats weight 174 -> 17.4 lbs")
         T.eq(cyndaEntry.description:find("curls itself up") ~= nil, true, "Gen 2 getDexEntry merges text page 1")
         T.eq(cyndaEntry.description:find("shoots flames") ~= nil, true, "Gen 2 getDexEntry merges text page 2")
+        T.eq(cyndaEntry.nationalDex, 155, "Gen 2 entry keeps the national dex number")
+        T.eq(g2Adapter:hasSeen("CYNDAQUIL"), true, "Seen flag keyed by dex number matches the species")
+        T.eq(g2Adapter:hasCaught("CYNDAQUIL"), true, "Caught flag keyed by dex number matches the species")
+        T.eq(g2Adapter:hasCaught("PIKACHU"), false, "Seen-only species is not caught")
+
+        g2Game.data.gen2Pokedex.newOrder = { "CYNDAQUIL", "TOTODILE" }
+        g2Game.save.position = { map = "NEW_BARK_TOWN" }
+        g2Game.data.maps = { NEW_BARK_TOWN = { id = "NEW_BARK_TOWN", landmark = 1 } }
+        g2Game.data.gen2Landmarks = {
+          landmarks = { LANDMARK_NEW_BARK_TOWN = { index = 1, name = "NEW BARK\nTOWN" } },
+        }
+        local placed = g2Adapter:getPlayerInfo()
+        T.eq(placed.location, "NEW BARK TOWN", "Player location uses the map landmark name")
+        local regional = g2Adapter:getDexEntry("CYNDAQUIL")
+        T.eq(regional.regionalDex, 1, "Johto dex number follows newOrder")
+
+        local metMon = g2Adapter:normalizeMon({
+          species = "CYNDAQUIL", level = 5, hp = 20, maxHp = 20,
+          caughtLocation = 1, caughtLevel = 5,
+        }, 1)
+        T.eq(metMon.metLocation, "NEW BARK TOWN", "Summary met place comes from the caught landmark")
+        T.eq(metMon.originDesc, "Met at NEW BARK TOWN (Lv. 5)", "Summary origin line includes the met level")
 
         -- Test SpriteHelper Palette Resolution for Gen 2 (Normal & Shiny)
         local normalPal = SpriteHelper.getMonPalette(g2Game.data, "CYNDAQUIL", false)
@@ -5139,6 +5521,8 @@ do
     -- Test text sanitization on control characters (\f \v)
     local dirtyText = "You woke me up!\fWill you check the\vclock for me?"
     local cleanText = Layout.cleanText(dirtyText)
+    local memo = Layout.cleanText("CALM nature. Met in PALLET TOWN at {LV_2} 5.")
+    T.eq(memo, "CALM nature. Met in PALLET TOWN at Lv. 5.", "Trainer memo prints the Lv glyph instead of {LV_2}")
     T.eq(cleanText:find("\f"), nil, "Cleaned text contains no form feed control characters")
     T.eq(cleanText:find("\v"), nil, "Cleaned text contains no vertical tab control characters")
 
@@ -8220,6 +8604,79 @@ do
     MoveRelearner.cursor, MoveRelearner.state, MoveRelearner.prompt, MoveRelearner.scroll = prevCursor, prevState, prevPrompt, prevScroll
   end
 end
+
+-- Menu animation toggle: low-end devices can skip entrance motion
+local function testMenuAnimations()
+  local schema = run.loader.optionSchemas.omni_ui or {}
+  local registered = false
+  for _, row in ipairs(schema) do
+    if row.key == "menu_animations" and row.type == "toggle" and row.default == true then
+      registered = true
+    end
+  end
+  T.eq(registered, true, "MENU ANIMATIONS toggle is registered and on by default")
+
+  local prevFlag = Layout.menuAnimations
+  local prevProgress = ModernOverlay.screenProgress
+  local prevKind = ModernOverlay.lastActiveKind
+  local prevState = ModernOverlay.lastActiveState
+  local prevSub = ModernOverlay.lastSubState
+  local prevTime = ModernOverlay.lastActiveTime
+  local prevDialogue = ModernOverlay.lastDialogueTime
+  local prevClosing = ModernOverlay.closingModal
+  local prevTransProgress = ModernOverlay.transition.progress
+  local prevTheme = Theme.currentThemeId
+  local prevTrans = Theme.transition
+  local optBag = run.loader.modOptions.omni_ui
+  local prevOpt = optBag and optBag.menu_animations
+
+  Layout.menuAnimations = false
+  local offX, offA = Layout.getCascadeOffset(4, 0.05, 0.022, 24)
+  T.eq(offX, 0, "List cascade offset is zero when menu animations are off")
+  T.eq(offA, 1.0, "List cascade alpha is full when menu animations are off")
+
+  ModernOverlay.screenProgress = {}
+  ModernOverlay.lastActiveKind = "save"
+  ModernOverlay.closingModal = { kind = "save", progress = 0.4, duration = 0.22 }
+  local snapState = {}
+  local snapped = ModernOverlay.updateProgress("party", snapState, nil, true)
+  T.eq(snapped, 1.0, "Menu open progress snaps to finished when animations are off")
+  T.eq(ModernOverlay.closingModal, nil, "Save modal exit animation is skipped when animations are off")
+  T.eq(ModernOverlay.screenProgress["party_" .. tostring(snapState)].progress, 1.0, "Disabled animations store a finished screen progress")
+
+  Theme.setTheme("kanto", 0.35)
+  T.eq(Theme.transition, nil, "Theme changes are instant when menu animations are off")
+  T.eq(Theme.currentThemeId, "kanto", "Theme still switches while animations are off")
+
+  Layout.menuAnimations = nil
+  run.loader.modOptions.omni_ui = run.loader.modOptions.omni_ui or {}
+  run.loader.modOptions.omni_ui.menu_animations = false
+  T.eq(Layout.animationsEnabled(), false, "Persisted mod option turns menu animations off")
+  run.loader.modOptions.omni_ui.menu_animations = true
+  T.eq(Layout.animationsEnabled(), true, "Persisted mod option turns menu animations back on")
+
+  Layout.menuAnimations = true
+  local onX = Layout.getCascadeOffset(1, 0.0, 0.022, 18)
+  T.eq(onX, 18, "List cascade offset returns when menu animations are on")
+
+  Layout.menuAnimations = prevFlag
+  ModernOverlay.screenProgress = prevProgress
+  ModernOverlay.lastActiveKind = prevKind
+  ModernOverlay.lastActiveState = prevState
+  ModernOverlay.lastSubState = prevSub
+  ModernOverlay.lastActiveTime = prevTime
+  ModernOverlay.lastDialogueTime = prevDialogue
+  ModernOverlay.closingModal = prevClosing
+  ModernOverlay.transition.progress = prevTransProgress
+  Theme.currentThemeId = prevTheme
+  Theme.transition = prevTrans
+  if optBag then
+    optBag.menu_animations = prevOpt
+  else
+    run.loader.modOptions.omni_ui = nil
+  end
+end
+testMenuAnimations()
 
 -- Reset back to default dark theme
 Theme.setTheme("dark")
