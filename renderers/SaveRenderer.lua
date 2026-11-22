@@ -144,9 +144,9 @@ function SaveRenderer.draw(game, state, vw, vh, theme, subState, hasStartMenu)
   })
 
   if isSaved then
-    Layout.drawText("[OK] " .. info.name .. " saved the game!", mx + 24, promptY + 20, { font = "headline", color = theme.hpGreen, bold = true })
+    Layout.drawTextWrapped("[OK] " .. info.name .. " saved the game!", mx + 24, promptY + 16, modalW - 48, { font = "body", color = theme.hpGreen, bold = true })
   elseif isSaving then
-    Layout.drawText("Saving game data... Please do not power off.", mx + 24, promptY + 20, { font = "headline", color = theme.hpYellow, bold = true })
+    Layout.drawTextWrapped("Saving game data... Please do not power off.", mx + 24, promptY + 16, modalW - 48, { font = "body", color = theme.hpYellow, bold = true })
   else
     local promptText = isOverwrite and "Overwrite save file?" or "Would you like to SAVE?"
     local yesSel = (cursor == 1)

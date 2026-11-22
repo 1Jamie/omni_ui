@@ -4,7 +4,6 @@
 
 local Theme = require("mods.omni_ui.core.Theme")
 local Layout = require("mods.omni_ui.core.Layout")
-local LegacyV1Shim = require("mods.omni_ui.compat.LegacyV1Shim")
 
 -- Modular Renderers
 local DialogueRenderer = require("mods.omni_ui.renderers.DialogueRenderer")
@@ -109,6 +108,41 @@ ModernOverlay.drawBattleTower = BattleTowerRenderer.draw
 ModernOverlay.drawCallerBox = CallerBoxRenderer.draw
 ModernOverlay.drawDexNav = ModernOverlay.drawMenu
 
+-- Native FRLG party icons live in the OAM pool. Omni skips PartyMenu.draw, but
+-- show() still creates the ball/mon sprites and Display flushes them with the
+-- overworld (and again after battle). Tear them down whenever overlay is on.
+function ModernOverlay.suppressGen3PartyOam(menu)
+  menu = menu or (package.loaded and package.loaded["src.ui.game3.party_menu"])
+  if type(menu) ~= "table" then return false end
+  local Oam = package.loaded and package.loaded["src.core.game3.oam"]
+  if not Oam then
+    local okO, o = pcall(require, "src.core.game3.oam")
+    if okO then Oam = o end
+  end
+  local did = false
+  local slots = menu._oam
+  if slots then
+    menu._oam = nil
+    if Oam and Oam.destroySprite then
+      for i = 1, 6 do
+        local s = slots[i]
+        if s then
+          if s.mon then Oam.destroySprite(s.mon); did = true end
+          if s.ball then Oam.destroySprite(s.ball); did = true end
+          if s.status then Oam.destroySprite(s.status); did = true end
+          if s.item then Oam.destroySprite(s.item); did = true end
+        end
+      end
+    end
+  end
+  if menu._summaryIcon and Oam and Oam.destroySprite then
+    Oam.destroySprite(menu._summaryIcon)
+    menu._summaryIcon = nil
+    did = true
+  end
+  return did
+end
+
 function ModernOverlay.ensureGen3Hooks(options)
   options = options or ModernOverlay.options
   local G3Stack = package and package.loaded and package.loaded["src.ui.game3.stack"]
@@ -146,6 +180,7 @@ function ModernOverlay.ensureGen3Hooks(options)
     hall_of_fame_pc = true,
     move_relearner = true,
     mod_manager = true,
+    berry_pouch = true,
   }
 
   if G3Stack and not G3Stack.__omniHooked then
@@ -222,6 +257,7 @@ function ModernOverlay.ensureGen3Hooks(options)
     "src.ui.game3.rse.summary_menu",
     "src.ui.game3.bag_menu",
     "src.ui.game3.rse.bag_menu",
+    "src.ui.game3.berry_pouch",
     "src.ui.game3.pokedex",
     "src.ui.game3.rse.pokedex",
     "src.ui.game3.rs.pokedex",
@@ -259,39 +295,43 @@ function ModernOverlay.ensureGen3Hooks(options)
     local okParty, p = pcall(require, "src.ui.game3.party_menu")
     if okParty then G3PartyMenu = p end
   end
+  local overlayOn = function()
+    return not options or options:get("overlay") ~= false
+  end
+
+  if G3PartyMenu and overlayOn() then
+    ModernOverlay.suppressGen3PartyOam(G3PartyMenu)
+  end
+
   if G3PartyMenu and type(G3PartyMenu.draw) == "function" and not G3PartyMenu.__omniHooked then
     G3PartyMenu.__omniHooked = true
     local origPartyDraw = G3PartyMenu.draw
     G3PartyMenu.draw = function(...)
-      if not options or options:get("overlay") ~= false then
-        local Oam = package and package.loaded and package.loaded["src.core.game3.oam"]
-        if not Oam then
-          local okO, o = pcall(require, "src.core.game3.oam")
-          if okO then Oam = o end
-        end
-        if G3PartyMenu._oam then
-          local slots = G3PartyMenu._oam
-          G3PartyMenu._oam = nil
-          if Oam and slots then
-            for i = 1, 6 do
-              local s = slots[i]
-              if s then
-                if s.mon then Oam.destroySprite(s.mon) end
-                if s.ball then Oam.destroySprite(s.ball) end
-                if s.status then Oam.destroySprite(s.status) end
-                if s.item then Oam.destroySprite(s.item) end
-              end
-            end
-          end
-        end
-        if G3PartyMenu._summaryIcon and Oam then
-          Oam.destroySprite(G3PartyMenu._summaryIcon)
-          G3PartyMenu._summaryIcon = nil
-        end
+      if overlayOn() then
+        ModernOverlay.suppressGen3PartyOam(G3PartyMenu)
         return
       end
       return origPartyDraw(...)
     end
+  end
+
+  if G3PartyMenu and not G3PartyMenu.__omniPartyOamHooked then
+    G3PartyMenu.__omniPartyOamHooked = true
+    local function wrapAfter(name)
+      local orig = G3PartyMenu[name]
+      if type(orig) ~= "function" then return end
+      G3PartyMenu[name] = function(...)
+        local results = { orig(...) }
+        if overlayOn() then
+          ModernOverlay.suppressGen3PartyOam(G3PartyMenu)
+        end
+        return unpack(results)
+      end
+    end
+    wrapAfter("show")
+    wrapAfter("update")
+    wrapAfter("handleInput")
+    wrapAfter("reloadSprites")
   end
 
   local RsePokedex = package and package.loaded and package.loaded["src.ui.game3.rse.pokedex"]
@@ -1186,6 +1226,46 @@ function ModernOverlay.drawMenu(game, state, vw, vh, theme, subState, viewport)
 end
 
 -- Checks if a state is supported by the modern overlay
+function ModernOverlay.isBerryPouch(state)
+  if not state then return false end
+  local id = state.screenId
+  if id == "berry_pouch" or id == "BerryPouch" then return true end
+  local Pouch = package.loaded and package.loaded["src.ui.game3.berry_pouch"]
+  if Pouch and state == Pouch then return true end
+  if state._plantMode == true or state._fromBerryCrush == true then return true end
+  if (state._location == "berry_tree" or state.location == "berry_tree")
+      and type(state.list) == "function" and not state.POCKET_KEYS then
+    return true
+  end
+  return false
+end
+
+local function getPublicApi()
+  local PublicApi = package.loaded["mods.omni_ui.api.PublicApi"]
+  if PublicApi then return PublicApi end
+  local ok, api = pcall(require, "mods.omni_ui.api.PublicApi")
+  if ok then return api end
+  return nil
+end
+
+local function isLegacyCustomId(customKind)
+  return type(customKind) == "string" and customKind:sub(1, 7) == "legacy_"
+end
+
+local function matchCustomScreen(state, id, wantLegacy)
+  local PublicApi = getPublicApi()
+  if not (PublicApi and PublicApi.customScreens) then return end
+  for customKind, screenDef in pairs(PublicApi.customScreens) do
+    if isLegacyCustomId(customKind) == wantLegacy then
+      if (screenDef.match and screenDef.match(state))
+          or (screenDef.screenId and screenDef.screenId == id)
+          or (id == customKind) then
+        return "custom_" .. customKind, screenDef
+      end
+    end
+  end
+end
+
 function ModernOverlay.isSupported(state)
   if not state or type(state) ~= "table" then return false end
   local id = state.screenId
@@ -1203,25 +1283,11 @@ function ModernOverlay.isSupported(state)
     return false
   end
 
-  -- Custom mod-registered screens (via PublicApi.registerScreen)
-  local PublicApi = package.loaded["mods.omni_ui.api.PublicApi"]
-  if PublicApi and PublicApi.customScreens then
-    for customKind, screenDef in pairs(PublicApi.customScreens) do
-      if (screenDef.match and screenDef.match(state)) or (screenDef.screenId and screenDef.screenId == id) or (id == customKind) then
-        return "custom_" .. customKind, screenDef
-      end
-    end
-  end
-
-  -- Legacy v1 match check first (KR UsefulBag / KantoSummary)
-  for _, contract in pairs(LegacyV1Shim.registeredAdapters) do
-    if contract.screens then
-      for kind, screenDef in pairs(contract.screens) do
-        if screenDef.match and screenDef.match(state) then
-          return "legacy_" .. kind, screenDef
-        end
-      end
-    end
+  -- Native PublicApi.registerScreen wins over v1 compat screens and over
+  -- built-in kinds so a dual-support mod does not collide with itself.
+  do
+    local kind, extra = matchCustomScreen(state, id, false)
+    if kind then return kind, extra end
   end
 
   if id == "PartyMenu" or id == "Gen2PartyMenu" or id == "Game3PartyMenu" or id == "party" or state.isPartyMenu
@@ -1269,7 +1335,8 @@ function ModernOverlay.isSupported(state)
   end
   if id == "BagMenu" or id == "Gen2PackMenu" or id == "Game3BagMenu" or id == "bag" or state.kind == "bag" or state.isBag or state.isPackMenu or state.location == "shop" or state.sellMode or state._sellMode or (state.mode == "sell") or (state.items and (state.__pocketIndex or state.isPackMenu or state.pocketIndex)) or (state.pocketIndex and state.pockets)
      or (state.POCKET_KEYS ~= nil or (state.pocketIdx ~= nil and state.currentPocket ~= nil))
-     or state == package.loaded["src.ui.game3.bag_menu"] or state == package.loaded["src.ui.game3.rse.bag_menu"] then
+     or state == package.loaded["src.ui.game3.bag_menu"] or state == package.loaded["src.ui.game3.rse.bag_menu"]
+     or ModernOverlay.isBerryPouch(state) then
     if state.mode == "buy" or (type(state.items) == "table" and type(state.items[1]) == "table" and state.items[1].price and not state.items[1].count) then
       return "shop"
     end
@@ -1475,6 +1542,12 @@ function ModernOverlay.isSupported(state)
     if id == "Menu" or (state.isMenu and not state._mgr) or (state.items and (state.index ~= nil or state.tx ~= nil or state.title ~= nil or state.cancelable ~= nil or state.itemY ~= nil or state.onSelect ~= nil)) then
       return "menu"
     end
+  end
+
+  -- v1 gen1_modern_ui adapters only if Omni has no native/custom handler.
+  do
+    local kind, extra = matchCustomScreen(state, id, true)
+    if kind then return kind, extra end
   end
 
   return false
@@ -1813,6 +1886,10 @@ function ModernOverlay.getActiveScreen(game)
           for p = i - 1, 1, -1 do
             local pk, pe = ModernOverlay.isSupported(states[p])
             if pk and pk ~= "dialogue" and pk ~= "choice" and pk ~= "quantity" and pk ~= "menu" and pk ~= "stat_box" then
+              -- When a mod menu is opened on top of start_menu, hide start_menu and render the mod menu alone
+              if kind == "menu" and pk == "start_menu" then
+                break
+              end
               return pk, states[p], pe, (states[#states] or s)
             elseif pk == "dialogue" then
               -- Underlying dialogue state (e.g. TextBox under a ChoiceBox)
@@ -1930,8 +2007,14 @@ function ModernOverlay.getActiveScreen(game)
             choiceSubState = {
               isChoiceBox = true,
               isGender = isGender,
+              kind = m.kind,
               anchor = (m.left and m.left <= 5) and "left" or "right",
               tx = m.left or 2,
+              ty = m.top,
+              left = m.left,
+              top = m.top,
+              width = m.width,
+              height = m.height,
               options = opts,
               cursor = (m.cursor or 0) + 1,
             }
@@ -1941,7 +2024,7 @@ function ModernOverlay.getActiveScreen(game)
           if hasDialog or choiceSubState then
             local isWaiting = false
             if speech.printer then
-              isWaiting = (speech.printer.state == "clear" or not speech.printer.active)
+              isWaiting = speech.printer.state == "clear"
             end
             if choiceSubState then isWaiting = false end
 
@@ -2016,6 +2099,7 @@ function ModernOverlay.getActiveScreen(game)
       move_relearner = "move_learn",
       shop = "shop",
       naming = "naming",
+      berry_pouch = "bag",
     }
 
     for i = #layers, 1, -1 do
@@ -2025,6 +2109,9 @@ function ModernOverlay.getActiveScreen(game)
         local target = (mod.Host and (mod.Host._screen or mod.Host._s)) or (mod._screen) or (mod._clock) or (mod._state) or (mod._s) or (mod._mgr) or mod
         if layer.id == "region_map" or layer.id == "rse_region_map" then
           return "town_map", target, nil, nil
+        end
+        if layer.id == "berry_pouch" then
+          return "bag", target, nil, choiceState
         end
         if target == mod and mod.isMenu and (layer.id == "rse_pokedex" or layer.id == "rs_pokedex") then
           local RsePokedex = package.loaded["src.ui.game3.rse.pokedex"] or package.loaded["src.ui.game3.rs.pokedex"]
@@ -2093,6 +2180,11 @@ function ModernOverlay.getActiveScreen(game)
     return "bag", BagMenu, nil, nil
   end
 
+  local BerryPouch = package.loaded["src.ui.game3.berry_pouch"]
+  if BerryPouch and ((BerryPouch.isOpen and BerryPouch.isOpen() == true) or BerryPouch.open == true) then
+    return "bag", BerryPouch, nil, nil
+  end
+
   local Pokedex = package.loaded["src.ui.game3.pokedex"] or package.loaded["src.ui.game3.rse.pokedex"] or package.loaded["src.ui.game3.rs.pokedex"]
   if Pokedex and ((Pokedex.isOpen and Pokedex.isOpen() == true) or Pokedex.open == true or (Pokedex.active and Pokedex.active() ~= nil)) then
     local target = (Pokedex.active and Pokedex.active()) or Pokedex
@@ -2143,11 +2235,25 @@ function ModernOverlay.getActiveScreen(game)
   local Message = package.loaded["src.ui.game3.message"]
   local Battle = package.loaded["src.core.game3.battle"]
   local battleOn = Battle and Battle.isActive and Battle.isActive() == true
-  -- Battle lines ("Wild X appeared!") stay on the battle console. The field
-  -- dialogue box is only for messages that are not part of the fight.
-  if battleOn and Message and Message.isOpen and Message.isOpen()
-      and Message.frameKind and Message.frameKind() == "battle" then
-    return "battle", (Battle.getState and Battle.getState()) or Battle._st or Battle, nil, nil
+  -- FRLG Oak/old-man tutorial lines use frame "voiceover", not "battle".
+  -- Switching to field dialogue hides Omni battle chrome and leaves the
+  -- native textbox void (battle.bottom_ui_visible is already suppressed).
+  if battleOn then
+    local battleState = (Battle.getState and Battle.getState()) or Battle._st or Battle
+    local overlay = nil
+    if Message and ((Message.isOpen and Message.isOpen() == true) or Message.open == true) then
+      local frame = Message.frameKind and Message.frameKind() or nil
+      if frame ~= "battle" then
+        overlay = Message._state or Message
+        if frame == "voiceover" and type(overlay) == "table" and overlay.speaker == nil then
+          overlay = setmetatable({ speaker = "OAK" }, { __index = overlay })
+        end
+      end
+    end
+    if not overlay and isChoiceActive and Choice then
+      overlay = Choice._state or Choice
+    end
+    return "battle", battleState, nil, overlay
   end
   if Message and ((Message.isOpen and Message.isOpen() == true) or Message.open == true) then
     return "dialogue", (Message._state or Message), nil, choiceState
@@ -2157,11 +2263,16 @@ function ModernOverlay.getActiveScreen(game)
     return "dialogue", (Choice._state or Choice), nil, nil
   end
 
-  if battleOn then
-    return "battle", (Battle.getState and Battle.getState()) or Battle._st or Battle, nil, nil
-  end
-
   return nil
+end
+
+function ModernOverlay.isBattleDialogueOverlay(state)
+  if not state then return false end
+  if state._pages or state._revealed ~= nil then return true end
+  if state.isChoiceBox or state.options or state.kind == "yesno" or state.kind == "multi" then
+    return true
+  end
+  return false
 end
 
 -- Transition & Animation State Manager
@@ -2507,6 +2618,10 @@ function ModernOverlay.draw(game, viewport)
       if not activeState.blankForAskName and not activeState.fieldCleared then
         ModernOverlay.drawBattle(game, activeState, vw, vh, theme, subState, viewport)
       end
+      -- Oak tutorial / in-battle prompts: keep chrome, draw the modal on top.
+      if subState and ModernOverlay.isBattleDialogueOverlay(subState) then
+        ModernOverlay.drawDialogue(game, subState, vw, vh, theme, nil, viewport)
+      end
     elseif kind == "dialogue" then
       local slideY = (rawP < 0.99) and math.floor((1 - expoVal) * 14) or 0
       if slideY ~= 0 then love.graphics.translate(0, slideY) end
@@ -2645,8 +2760,6 @@ function ModernOverlay.draw(game, viewport)
       elseif kind:find("^custom_") and extra and extra.draw and type(extra.draw) == "function" then
         local HookBoundary = require("mods.omni_ui.core.HookBoundary")
         HookBoundary.safeRender(kind, extra.draw, game, activeState, cw, ch, theme, subState, rawP)
-      elseif kind:find("^legacy_") then
-        ModernOverlay.drawLegacy(game, activeState, extra, cw, ch, theme)
       end
     end
 

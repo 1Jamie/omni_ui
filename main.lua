@@ -203,6 +203,15 @@ local function attachBagControls(state, game)
   if not state or state.__omniUiControlsAttached then return end
   state.__omniUiControlsAttached = true
 
+  local isBerryPouch = (state == package.loaded["src.ui.game3.berry_pouch"]
+    or state._plantMode == true
+    or ((state._location == "berry_tree" or state.location == "berry_tree") and type(state.list) == "function" and not state.POCKET_KEYS))
+  if isBerryPouch then
+    -- Native BerryPouch.handleInput already drives list/plant/cancel.
+    -- Do not attach Gen 1 pocket rebuild or FRLG extra-tab switching.
+    return
+  end
+
   local isGen3Bag = (state == package.loaded["src.ui.game3.bag_menu"] or state == package.loaded["src.ui.game3.rse.bag_menu"] or state.POCKET_KEYS ~= nil or (state.pocketIdx ~= nil and state.currentPocket ~= nil))
   if isGen3Bag then
     local thisState = state
@@ -338,27 +347,137 @@ local function attachBagControls(state, game)
 
   local isGen2Pack = (state.isPackMenu or state.pocketIndex ~= nil or state.pocketItems ~= nil or state.staleRows ~= nil or (type(state.rows) == "table" and not state.party))
   if isGen2Pack then
-    -- Gen 2 PackMenu already possesses complete native controls (switchPocket, Up/Down, openSubmenu, toss, etc.)
-    -- We only add shoulder bumper controls (Q/E or L/R) for extra responsiveness
+    -- Native PackMenu has 4 pockets. Omni inserts a virtual MEDICINE pocket that
+    -- filters the ITEM pocket so Gen 2 matches Gen 1/3 bag layout.
+    local ItemDatabase = require("mods.omni_ui.core.ItemDatabase")
+    local OMNI_VISUAL = {
+      { id = "ITEM", label = "ITEMS", native = 1, medicine = false },
+      { id = "MEDICINE", label = "MEDICINE", native = 1, medicine = true },
+      { id = "BALL", label = "BALLS", native = 2 },
+      { id = "KEY_ITEM", label = "KEY ITEMS", native = 3 },
+      { id = "TM_HM", label = "TMs & HMs", native = 4 },
+    }
+
+    local function filterItemRows(self)
+      if not self.__omniPackSplit then return end
+      local visual = OMNI_VISUAL[self.__omniVisualPocket or 1]
+      if not visual or visual.native ~= 1 then return end
+      local src = self.__omniRawRows or self.rows or {}
+      local filtered = {}
+      for i = 1, #src do
+        local row = src[i]
+        local isMed = ItemDatabase.isMedicineItem(row and row.id)
+        if visual.medicine and isMed then
+          filtered[#filtered + 1] = row
+        elseif (not visual.medicine) and (not isMed) then
+          filtered[#filtered + 1] = row
+        end
+      end
+      self.rows = filtered
+      local total = #filtered + 1
+      self.index = math.max(1, math.min(self.index or 1, total))
+      if self.ensureVisible then self:ensureVisible() end
+    end
+
+    local function applyVisualPocket(self, vIdx, playSfx)
+      local n = #OMNI_VISUAL
+      vIdx = ((vIdx - 1) % n) + 1
+      local visual = OMNI_VISUAL[vIdx]
+      self.__omniPackSplit = true
+      self.__omniVisualPocket = vIdx
+      self.__omniMedicineView = visual.medicine and true or false
+      if self.storeCursor then self:storeCursor() end
+      if self.pocketIndex ~= visual.native then
+        self.pocketIndex = visual.native
+        if self.restoreCursor then self:restoreCursor() end
+      end
+      if self.rebuild then self:rebuild() end
+      self.__omniRawRows = self.rows
+      filterItemRows(self)
+      if self.storeCursor then self:storeCursor() end
+      if playSfx and self.playSfx then self:playSfx("Sfx_SwitchPockets") end
+    end
+
+    local function syncVisualFromNative(self)
+      local ni = self.pocketIndex or 1
+      if self.__omniMedicineView and ni == 1 then
+        self.__omniVisualPocket = 2
+      elseif ni <= 1 then
+        self.__omniVisualPocket = 1
+        self.__omniMedicineView = false
+      else
+        self.__omniVisualPocket = ni + 1
+        self.__omniMedicineView = false
+      end
+    end
+
+    if not state.__omniPackSplit then
+      syncVisualFromNative(state)
+      state.__omniPackSplit = true
+      if state.rebuild then
+        state:rebuild()
+        state.__omniRawRows = state.rows
+        filterItemRows(state)
+      end
+    end
+
+    state.switchPocket = function(self, delta)
+      local cur = self.__omniVisualPocket or 1
+      applyVisualPocket(self, cur + (delta or 1), true)
+    end
+
+    local baseRebuild = state.rebuild
+    if baseRebuild then
+      state.rebuild = function(self, ...)
+        baseRebuild(self, ...)
+        if self.__omniPackSplit then
+          self.__omniRawRows = self.rows
+          filterItemRows(self)
+        end
+      end
+    end
+
+    -- SELECT reorder uses Bag.move indices into the full ITEM pocket. Filtered
+    -- medicine/item rows would land items in the wrong slots, so block it here.
+    local baseArmSwitch = state.armSwitch
+    if baseArmSwitch then
+      state.armSwitch = function(self, ...)
+        local visual = OMNI_VISUAL[self.__omniVisualPocket or 1]
+        if visual and visual.native == 1 then return end
+        return baseArmSwitch(self, ...)
+      end
+    end
+
     local baseUpdate = state.update
     state.update = function(self, dt)
       local input = (self.game and self.game.input) or (game and game.input) or (currentGame and currentGame.input)
       if input and not self.submenu and not self.qtyState and not self.confirm and not self.switching and not self.message then
         if input:wasPressed("l") or input:wasPressed("q") then
-          if self.switchPocket then self:switchPocket(-1) end
+          self:switchPocket(-1)
           return
         elseif input:wasPressed("r") or input:wasPressed("e") then
-          if self.switchPocket then self:switchPocket(1) end
+          self:switchPocket(1)
           return
         end
       end
       if baseUpdate then baseUpdate(self, dt) end
+      -- Native Left/Right also call switchPocket; keep visual index coherent if
+      -- something else moved pocketIndex without going through our wrapper.
+      if self.__omniPackSplit and self.pocketIndex then
+        local visual = OMNI_VISUAL[self.__omniVisualPocket or 1]
+        if visual and self.pocketIndex ~= visual.native then
+          syncVisualFromNative(self)
+          self.__omniRawRows = self.rows
+          filterItemRows(self)
+        end
+      end
     end
     return
   end
 
   local BASE_POCKETS = {
     { id = "items", label = "ITEMS" },
+    { id = "medicine", label = "MEDICINE" },
     { id = "balls", label = "BALLS" },
     { id = "key",   label = "KEY ITEMS" },
     { id = "tmhm",  label = "TMs & HMs" },
@@ -396,6 +515,10 @@ local function attachBagControls(state, game)
     if (def and def.ball) or (type(id) == "string" and (id:find("_BALL$") or id == "POKE_BALL" or id == "GREAT_BALL" or id == "ULTRA_BALL" or id == "MASTER_BALL" or id == "SAFARI_BALL")) then
       return "balls"
     end
+    local ItemDatabase = require("mods.omni_ui.core.ItemDatabase")
+    if ItemDatabase.isMedicineItem(id, def) then
+      return "medicine"
+    end
     return "items"
   end
 
@@ -422,6 +545,7 @@ local function attachBagControls(state, game)
   if state.__pocketIds and type(state.__pocketIds) == "table" and #state.__pocketIds > 0 then
     local POCKET_LABELS = {
       items = "ITEMS",
+      medicine = "MEDICINE",
       balls = "BALLS",
       key = "KEY ITEMS",
       tmhm = "TMs & HMs",
@@ -2601,6 +2725,11 @@ ModernOverlay.attachControls = function(state, game)
 end
 
 return function(mod)
+  local SpriteHelper = require("mods.omni_ui.core.SpriteHelper")
+  if SpriteHelper and SpriteHelper.setMod then
+    SpriteHelper.setMod(mod)
+  end
+
   -- 1. Register mod options dynamically from discovered themes in themes/
   local function buildThemeChoices()
     local choices = {}
@@ -2608,7 +2737,7 @@ return function(mod)
       choices[#choices + 1] = { (t.label or t.id):upper(), t.id }
     end
     if #choices == 0 then
-      choices = { { "DARK MODERN", "dark" } }
+      choices = { { "DARK MODERN", "dark-modern" } }
     end
     return choices
   end
@@ -2618,7 +2747,7 @@ return function(mod)
       key = "theme",
       label = "UI THEME",
       type = "choice",
-      default = "dark",
+      default = "dark-modern",
       choices = buildThemeChoices(),
     },
     {
@@ -2636,7 +2765,7 @@ return function(mod)
   })
 
   -- Synchronize theme from persisted mod options at startup
-  local initTheme = mod.options:get("theme")
+  local initTheme = Theme.resolveId(mod.options:get("theme"))
   if initTheme and Theme.REGISTRY[initTheme] then
     Theme.setTheme(initTheme)
   end
@@ -2874,6 +3003,29 @@ return function(mod)
         end
       end
     end
+    local status = game and game.modStatus
+    local hasMods = false
+    if type(list) == "table" then
+      for _, r in ipairs(list) do
+        if type(r) == "table" and r.id == "mods" then hasMods = true break end
+      end
+    end
+    if not hasMods and status and #(status.available or {}) > 0 and type(list) == "table" then
+      local at = #list + 1
+      for i, r in ipairs(list) do
+        if type(r) == "table" and r.cancel then at = i break end
+      end
+      table.insert(list, at, {
+        id = "mods", label = "MODS", port = true,
+        value = function(g)
+          local st = g and g.modStatus or {}
+          return string.format("%d INSTALLED", #(st.available or {}))
+        end,
+        activate = function(g)
+          require("src.ui.Screens").push(g, "ManagerState")
+        end,
+      })
+    end
     return list
   end, 50)
 
@@ -2965,6 +3117,22 @@ return function(mod)
     return list
   end, 50)
 
+  -- Gen 2's title list is { label, value }. The cart rows stop at OPTION;
+  -- this adds MODS ahead of EXIT when a mod is installed. choose() only
+  -- understands the cart values, so the mods value is handled below.
+  local okMenu, Gen2MainMenu = pcall(require, "src.ui.gen2.MainMenu")
+  if okMenu and Gen2MainMenu and not Gen2MainMenu._omniModsChoose then
+    Gen2MainMenu._omniModsChoose = true
+    local choose = Gen2MainMenu.choose
+    function Gen2MainMenu.choose(self, value)
+      if value == "mods" and self.game then
+        require("src.ui.Screens").push(self.game, "ManagerState")
+        return
+      end
+      return choose(self, value)
+    end
+  end
+
   -- Eagerly pre-load THIS version's save when the title menu opens, so the
   -- continue card shows that cart's party instead of whichever file loads first.
   mod.hooks:wrap("ui.title_menu.items", function(next, game, items)
@@ -2989,6 +3157,21 @@ return function(mod)
     if loaded then
       if game then game.__omniTitleSave = loaded end
       if type(result) == "table" then result.__omniSave = loaded end
+    end
+    if type(result) == "table" then
+      local usesValue, hasMods = false, false
+      for _, it in ipairs(result) do
+        if type(it) == "table" and it.value ~= nil then usesValue = true end
+        if type(it) == "table" and it.value == "mods" then hasMods = true end
+      end
+      local status = game and game.modStatus
+      if usesValue and not hasMods and status and #(status.available or {}) > 0 then
+        local at = #result + 1
+        for i, it in ipairs(result) do
+          if type(it) == "table" and it.value == "exit" then at = i break end
+        end
+        table.insert(result, at, { label = "MODS", value = "mods" })
+      end
     end
     return result
   end, 50)
@@ -3295,7 +3478,8 @@ return function(mod)
     end
   end)
 
-  -- 5. Suppress classic low-res battle HUD and text box so modern OmniUI overlay renders cleanly over sprites
+  -- 5. Suppress classic low-res battle HUD and text box so modern OmniUI overlay renders cleanly over sprites.
+  -- Gen 3 party-ball trays stay: they sit on the field until send-out, then leave on their own.
   mod.hooks:wrap("battle.status_hud_visible", function(next, battle)
     if mod.options:get("overlay") ~= false then
       return false
@@ -3684,16 +3868,15 @@ return function(mod)
     mod.exports[k] = v
   end
 
-  -- Backwards-compatibility alias: enable legacy mods searching for gen1_modern_ui
-  if mod.loader and mod.loader.exports then
-    mod.loader.exports["gen1_modern_ui"] = mod.exports
-  end
-  package.loaded["gen1_modern_ui"] = mod.exports
+  -- v1 gen1_modern_ui surface lives on Omni exports. Other mods flip find to
+  -- omni_ui (or require this package.loaded alias) and keep registerAdapter.
+  local LegacyV1Shim = require("mods.omni_ui.compat.LegacyV1Shim")
+  LegacyV1Shim.publishAlias(mod.exports)
 
   -- 8. Option change listener for instant live theme hot-swaps
   mod.events:on("mod.options_changed", function(ev)
     if ev and (not ev.mod or ev.mod == "omni_ui") and ev.key == "theme" then
-      if ev.value and Theme.REGISTRY[ev.value] and ev.value ~= Theme.currentThemeId then
+      if ev.value and Theme.REGISTRY[Theme.resolveId(ev.value)] then
         Theme.setTheme(ev.value)
       end
     end
@@ -3702,7 +3885,7 @@ return function(mod)
   mod.events:on("options.changed", function(key, val)
     local targetKey = (type(key) == "table" and key.key) or key
     local targetVal = (type(key) == "table" and key.value) or val
-    if targetKey == "theme" and targetVal and Theme.REGISTRY[targetVal] and targetVal ~= Theme.currentThemeId then
+    if targetKey == "theme" and targetVal and Theme.REGISTRY[Theme.resolveId(targetVal)] then
       Theme.setTheme(targetVal)
     end
   end)

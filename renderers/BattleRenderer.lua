@@ -14,6 +14,59 @@ local function isMaleGender(gender)
   return g == "M" or g == "MALE"
 end
 
+-- GBA healthboxes tick ~1 HP per frame. Follow the adapter target at that pace
+-- so damage and heals slide instead of jumping when the live HP snaps.
+BattleRenderer._hpTween = BattleRenderer._hpTween or {}
+
+function BattleRenderer.tweenHp(id, target, maxHp, species)
+  target = tonumber(target) or 0
+  maxHp = math.max(1, tonumber(maxHp) or 1)
+  species = tostring(species or "")
+  local now = (love and love.timer and love.timer.getTime and love.timer.getTime()) or os.clock()
+  local st = BattleRenderer._hpTween[id]
+  if not st or st.species ~= species or st.maxHp ~= maxHp then
+    BattleRenderer._hpTween[id] = { hp = target, maxHp = maxHp, species = species, t = now }
+    return target
+  end
+  local dt = math.max(0, math.min(0.05, now - (st.t or now)))
+  st.t = now
+  local diff = target - st.hp
+  if math.abs(diff) <= 0.05 then
+    st.hp = target
+    return st.hp
+  end
+  local step = 60 * dt
+  if step >= math.abs(diff) then
+    st.hp = target
+  else
+    st.hp = st.hp + ((diff > 0) and step or -step)
+  end
+  return st.hp
+end
+
+function BattleRenderer.drawPartyBalls(x, y, balls, theme)
+  balls = balls or {}
+  for i = 1, 6 do
+    local bStat = balls[i] or "empty"
+    local bColor = theme.colors.surfaceHigh
+    local bBorder = theme.colors.border
+    if bStat == "ok" then
+      bColor = theme.colors.hpGreen or theme.colors.accent
+      bBorder = bColor
+    elseif bStat == "status" then
+      bColor = theme.colors.hpYellow or theme.colors.warn
+      bBorder = bColor
+    elseif bStat == "fainted" then
+      bColor = theme.colors.hpRed or theme.colors.danger
+      bBorder = bColor
+    end
+    love.graphics.setColor(bColor[1], bColor[2], bColor[3], 0.95)
+    love.graphics.rectangle("fill", x + (i - 1) * 12, y, 8, 8, 2, 2)
+    love.graphics.setColor(bBorder[1], bBorder[2], bBorder[3], 0.55)
+    love.graphics.rectangle("line", x + (i - 1) * 12, y, 8, 8, 2, 2)
+  end
+end
+
 local function wrappedLineCount(text, fontName, width)
   text = Layout.cleanText(tostring(text or ""))
   local font = Layout.getFont(fontName)
@@ -259,15 +312,16 @@ function BattleRenderer.drawOpponentHud(game, enemy, x, y, w, h, theme)
   -- 3. Health Bar Meter
   local barY = y + 30
   local barW = w - 28
-  local curHp = enemy.shownHp or enemy.hp or 0
   local maxHp = math.max(1, enemy.maxHp or 1)
+  local curHp = BattleRenderer.tweenHp("enemy:" .. tostring(enemy.species or enemy.name or ""), enemy.shownHp or enemy.hp or 0, maxHp, enemy.species or enemy.name)
   Layout.drawHealthBar(x + 14, barY, barW, 7, curHp, maxHp, {
     radius = 3,
   })
 
-  -- 4. HP Percentage
+  -- 4. HP Percentage + foe party balls (how many Pokémon they still have)
   local pctStr = ("%d%%"):format(math.floor(math.max(0, math.min(1, curHp / maxHp)) * 100))
   Layout.drawText(pctStr, x + 14, barY + 11, { font = "tiny", color = theme.colors.textDim, bold = true })
+  BattleRenderer.drawPartyBalls(x + w - 14 - 68, barY + 13, enemy.partyBalls, theme)
 
   -- 5. Sandboxed Modder Custom Badges
   for idx, badgeDef in ipairs(BattleRenderer.customBadges) do
@@ -329,8 +383,8 @@ function BattleRenderer.drawPlayerHud(game, player, x, y, w, h, theme)
   -- 3. Health Bar Meter
   local barY = y + 28
   local barW = w - 28
-  local curHp = player.shownHp or player.hp or 0
   local maxHp = math.max(1, player.maxHp or 1)
+  local curHp = BattleRenderer.tweenHp("player:" .. tostring(player.species or player.name or ""), player.shownHp or player.hp or 0, maxHp, player.species or player.name)
   Layout.drawHealthBar(x + 14, barY, barW, 7, curHp, maxHp, {
     radius = 3,
   })
@@ -348,28 +402,7 @@ function BattleRenderer.drawPlayerHud(game, player, x, y, w, h, theme)
   })
 
   -- 5. Party Ball indicators
-  local ballY = y + h - 14
-  local ballX = x + 14
-  for i = 1, 6 do
-    local bStat = player.partyBalls and player.partyBalls[i] or "empty"
-    local bColor = theme.colors.surfaceHigh
-    local bBorder = theme.colors.border
-    if bStat == "ok" then
-      bColor = theme.colors.hpGreen
-      bBorder = theme.colors.hpGreen
-    elseif bStat == "status" then
-      bColor = theme.colors.hpYellow
-      bBorder = theme.colors.hpYellow
-    elseif bStat == "fainted" then
-      bColor = theme.colors.hpRed
-      bBorder = theme.colors.hpRed
-    end
-
-    love.graphics.setColor(bColor[1], bColor[2], bColor[3], 0.95)
-    love.graphics.rectangle("fill", ballX + (i - 1) * 12, ballY, 6, 6, 2, 2)
-    love.graphics.setColor(bBorder[1], bBorder[2], bBorder[3], 0.5)
-    love.graphics.rectangle("line", ballX + (i - 1) * 12, ballY, 6, 6, 2, 2)
-  end
+  BattleRenderer.drawPartyBalls(x + 14, y + h - 14, player.partyBalls, theme)
 
   -- 6. Sandboxed Modder Custom Badges
   for idx, badgeDef in ipairs(BattleRenderer.customBadges) do
@@ -588,20 +621,25 @@ function BattleRenderer.draw(game, state, vw, vh, theme, subState, viewport)
     deckH = math.max(104, math.min(130, vh - deckY - 14))
   end
 
-  -- 1. Opponent Battler HUD (Top-Left, framed cleanly against the arena)
+  -- 1. Opponent Battler HUD (Top-Left). Wait until the mon is out so Gen 3
+  -- intro party-ball trays can sit in the native spot first.
   local oppX = math.max(deckMargin, math.min(gx + 12, vw - hudW - deckMargin))
   local oppY = math.max(deckMargin, gy + 10)
-  BattleRenderer.drawOpponentHud(game, battleInfo.enemy, oppX, oppY, hudW, hudH, theme)
+  if battleInfo.enemyMonOut ~= false then
+    BattleRenderer.drawOpponentHud(game, battleInfo.enemy, oppX, oppY, hudW, hudH, theme)
 
-  -- If double battle, draw 2nd opponent HUD beside it
-  if battleInfo.isDouble and battleInfo.enemy2 and battleInfo.enemy2.active then
-    BattleRenderer.drawOpponentHud(game, battleInfo.enemy2, oppX + hudW + 12, oppY, hudW, hudH, theme)
+    -- If double battle, draw 2nd opponent HUD beside it
+    if battleInfo.isDouble and battleInfo.enemy2 and battleInfo.enemy2.active then
+      BattleRenderer.drawOpponentHud(game, battleInfo.enemy2, oppX + hudW + 12, oppY, hudW, hudH, theme)
+    end
   end
 
-  -- 2. Player Battler HUD (Bottom-Right, floating cleanly above the docked command deck)
+  -- 2. Player Battler HUD (Bottom-Right). Same send-out gate as the foe card.
   local playerHudX = math.max(deckMargin, math.min(gx + gw - hudW - 8, vw - hudW - deckMargin))
   local playerHudY = math.max(oppY + hudH + 8, deckY - playerHudH - 8)
-  BattleRenderer.drawPlayerHud(game, battleInfo.player, playerHudX, playerHudY, hudW, playerHudH, theme)
+  if battleInfo.playerMonOut ~= false then
+    BattleRenderer.drawPlayerHud(game, battleInfo.player, playerHudX, playerHudY, hudW, playerHudH, theme)
+  end
 
   -- 3. Bottom Interactive Console Deck
   local liveText, liveWaiting = BattleRenderer.battleMessageText()

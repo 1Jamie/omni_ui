@@ -57,14 +57,78 @@ local v1Result = exports.registerAdapter({
   },
 })
 T.eq(v1Result, true, "Legacy v1 contract registers successfully")
+T.neq(exports.customScreens.legacy_UsefulBag, nil, "v1 adapter publishes through PublicApi.registerScreen")
 
--- Test legacy screen rendering via LegacyRenderer
+-- Test legacy screen rendering via the shared custom-screen path
 local mockLegacyState = { screenId = "UsefulBag" }
 local legacyKind, legacyScreenDef = ModernOverlay.isSupported(mockLegacyState)
-T.eq(legacyKind, "legacy_UsefulBag", "ModernOverlay detects registered legacy v1 screen")
+T.eq(legacyKind, "custom_legacy_UsefulBag", "ModernOverlay detects v1 screens as custom overlay kinds")
 T.neq(legacyScreenDef, nil, "Legacy screen definition resolved")
-local okLegacyDraw = pcall(ModernOverlay.drawLegacy, fakeGame, mockLegacyState, legacyScreenDef, 760, 480, Theme.get())
-T.eq(okLegacyDraw, true, "LegacyRenderer draws v1 adapter model cleanly")
+T.eq(type(legacyScreenDef.draw), "function", "v1 screen exposes the PublicApi draw callback")
+local okLegacyDraw = pcall(legacyScreenDef.draw, fakeGame, mockLegacyState, 760, 480, Theme.get())
+T.eq(okLegacyDraw, true, "v1 adapter screen draws through LegacyRenderer via PublicApi")
+T.eq(package.loaded["gen1_modern_ui"], exports, "package.loaded gen1_modern_ui is Omni exports")
+T.neq(exports.adopt, nil, "v1 adopt helper is exported")
+do
+  local donor = {
+    id = "donor_mod",
+    exports = {
+      gen1ModernUi = {
+        apiVersion = 1,
+        screens = {
+          DonorBoard = {
+            match = function(s) return s and s.screenId == "DonorBoard" end,
+            model = function() return { title = "BOARD", rows = {} } end,
+          },
+        },
+      },
+    },
+  }
+  T.eq(exports.adopt(donor), true, "adopt registers a gen1ModernUi export table")
+  T.neq(exports.customScreens.legacy_DonorBoard, nil, "adopt publishes through registerScreen")
+end
+
+do
+  -- Dual-support mods: native Omni path wins; v1 compat must not collide.
+  local dualMatch = function(s) return s and s.isDualQuest == true end
+  T.eq(exports.registerScreen("dual_quest", {
+    match = dualMatch,
+    draw = function() end,
+  }), true, "native registerScreen for dual-support mod")
+  T.eq(exports.registerAdapter({
+    owner = "dual_mod",
+    contract = {
+      apiVersion = 1,
+      screens = {
+        DualQuest = {
+          match = dualMatch,
+          model = function() return { title = "QUESTS", rows = {} } end,
+        },
+        KRBag = {
+          match = function(s)
+            return s and s.screenId == "BagMenu" and type(s.__pocketIndex) == "number"
+          end,
+          model = function() return { title = "ITEMS", rows = {} } end,
+        },
+        KRSummary = {
+          match = function(s)
+            return s and s.screenId == "SummaryMenu" and s._expMaxPage == 3
+          end,
+          model = function() return { title = "STATUS", rows = {} } end,
+        },
+      },
+    },
+  }), true, "v1 adapter for dual-support mod still registers")
+  T.eq(exports.customScreens.legacy_DualQuest, nil, "v1 screen is skipped when registerScreen already owns the match")
+  T.eq(select(1, ModernOverlay.isSupported({ isDualQuest = true })), "custom_dual_quest", "native registerScreen is chosen over v1 for the same match")
+  T.eq(ModernOverlay.isSupported({
+    screenId = "BagMenu", items = {}, __pocketIndex = 1, __pocketIds = { "items" }, title = "ITEMS",
+  }), "bag", "native bag overlay wins over a v1 UsefulBag-style adapter")
+  T.eq(ModernOverlay.isSupported({
+    screenId = "SummaryMenu", _expMaxPage = 3, page = 1, mon = { species = "PIKACHU" },
+  }), "summary", "native summary overlay wins over a v1 KantoSummary adapter")
+  T.eq(select(1, ModernOverlay.isSupported(mockLegacyState)), "custom_legacy_UsefulBag", "v1-only screens still use the compat path")
+end
 
 -- Test native screen instantiation & ModernOverlay support
 local fakeInput = {
@@ -699,6 +763,59 @@ do
   }
   local okHoennMsg = pcall(function() ModernOverlay.drawShopMenu(fakeGame, hoennMsg, 800, 500, theme, nil) end)
   T.eq(okHoennMsg, true, "drawShopMenu renders a Hoenn clerk message")
+
+  -- Gen 2 MartMenu uses phase/entries/topIndex instead of Gen 3 mode/_items.
+  local gen2Top = {
+    screenId = "Gen2MartMenu",
+    phase = "top",
+    topIndex = 2,
+    martType = "STANDARD",
+    entries = {
+      { id = "POKE_BALL", name = "POKé BALL", price = 200 },
+      { id = "POTION", name = "POTION", price = 300 },
+    },
+    money = function() return 3500 end,
+  }
+  T.eq(ModernOverlay.isSupported(gen2Top), "shop", "ModernOverlay detects Gen2MartMenu")
+  local okGen2Top = pcall(function() ModernOverlay.drawShopMenu(fakeGame, gen2Top, 800, 500, theme, nil) end)
+  T.eq(okGen2Top, true, "drawShopMenu renders Gen 2 BUY/SELL/QUIT top menu")
+
+  local gen2Buy = {
+    screenId = "Gen2MartMenu",
+    phase = "buy",
+    index = 1,
+    scroll = 0,
+    entries = {
+      { id = "POKE_BALL", name = "POKé BALL", price = 200 },
+      { id = "POTION", name = "POTION", price = 300 },
+    },
+    money = function() return 3500 end,
+  }
+  local okGen2Buy = pcall(function() ModernOverlay.drawShopMenu(fakeGame, gen2Buy, 800, 500, theme, nil) end)
+  T.eq(okGen2Buy, true, "drawShopMenu renders Gen 2 buy shelf from entries")
+
+  local gen2Qty = {
+    screenId = "Gen2MartMenu",
+    phase = "buyQuantity",
+    index = 1,
+    qty = 3,
+    entries = gen2Buy.entries,
+    money = function() return 3500 end,
+  }
+  local okGen2Qty = pcall(function() ModernOverlay.drawShopMenu(fakeGame, gen2Qty, 800, 500, theme, nil) end)
+  T.eq(okGen2Qty, true, "drawShopMenu renders Gen 2 quantity phase")
+
+  local gen1Root = {
+    screenId = "ShopMenu",
+    items = {
+      { label = "BUY", keepOpen = true, onSelect = function() end },
+      { label = "SELL", keepOpen = true, onSelect = function() end },
+      { label = "QUIT", keepOpen = true, onSelect = function() end },
+    },
+    index = 1,
+  }
+  local okGen1Root = pcall(function() ModernOverlay.drawShopMenu(fakeGame, gen1Root, 800, 500, theme, nil) end)
+  T.eq(okGen1Root, true, "drawShopMenu renders Gen 1 clerk root choices")
 
   -- Test Shop SELL mode opening the Bag
   local fakeSellBagState = {
@@ -1357,9 +1474,11 @@ for _, t in ipairs(loadedThemes) do
   if t.id == "cyber" then foundCyber = true end
   if t.id == "classic" then foundClassic = true end
   if t.id == "kanto" then foundKanto = true end
-  if t.id == "dark" then foundDark = true end
+  if t.id == "dark-modern" then foundDark = true end
 end
 T.eq(foundEmerald and foundCyber and foundClassic and foundKanto and foundDark, true, "All 5 theme IDs are dynamically present in Theme.list()")
+T.eq(loadedThemes[1].id, "dark-modern", "Theme.list prefers dark-modern as the default theme")
+T.eq(Theme.resolveId("dark"), "dark-modern", "legacy dark id aliases to dark-modern")
 
 -- Test Live Theme Swapping
 Theme.setTheme("cyber")
@@ -1376,7 +1495,7 @@ Theme.setTheme("classic")
 T.eq(Theme.get().id, "classic", "Theme.setTheme switches active theme to Classic Pocket")
 
 Theme.setTheme("dark")
-T.eq(Theme.get().id, "dark", "Theme.setTheme resets active theme to Dark Modern")
+T.eq(Theme.get().id, "dark-modern", "Theme.setTheme resets active theme to Dark Modern")
 
 fakeGame.stack.states = {}
 
@@ -1478,7 +1597,7 @@ for _, filePath in ipairs(themeFiles) do
 end
 
 -- C. Verification of Theme Diversity & Custom Composition Execution
-local testThemes = { "dark", "cyber", "emerald", "classic", "kanto", "catppuccin" }
+local testThemes = { "dark-modern", "cyber", "emerald", "classic", "kanto", "catppuccin" }
 for _, themeId in ipairs(testThemes) do
   Theme.setTheme(themeId)
   local t = Theme.get()
@@ -1678,6 +1797,90 @@ do
   T.eq(#g3Cache.validTargets, 4, "Double battle generates 4 targeting slots (FOE 1, FOE 2, ALLY, SELF)")
   T.eq(g3Cache.validTargets[1].label, "FOE 1", "Target 1 is FOE 1")
   T.eq(g3Cache.validTargets[2].label, "FOE 2", "Target 2 is FOE 2")
+
+  -- FRLG/Gen3 party-ball trays + HP interpolation
+  do
+    local mockFrlg = {
+      data = Data,
+      gameVersion = "firered",
+      save = {
+        party = {
+          { species = "CHARMANDER", level = 5, hp = 20, stats = { hp = 20 } },
+          { species = "PIDGEY", level = 3, hp = 0, stats = { hp = 16 } },
+          { species = "RATTATA", level = 4, hp = 12, status = "PSN", stats = { hp = 15 } },
+        },
+      },
+      stack = {
+        states = {
+          {
+            isBattle = true,
+            screenId = "Game3BattleState",
+            player = { name = "CHARMANDER", shownHP = 20, maxHP = 20, mon = { species = "CHARMANDER", level = 5, hp = 20 } },
+            enemy = { name = "SQUIRTLE", shownHP = 18, maxHP = 20, mon = { species = "SQUIRTLE", level = 5, hp = 18 } },
+            playerParty = {
+              { species = "CHARMANDER", hp = 20 },
+              { species = "PIDGEY", hp = 0 },
+              { species = "RATTATA", hp = 12, status = "PSN" },
+            },
+            foeParty = {
+              { species = "SQUIRTLE", hp = 18 },
+              { species = "PIDGEOTTO", hp = 40 },
+            },
+          },
+        },
+      },
+    }
+    local frlgAdapter = Gen3Adapter.new(mockFrlg)
+    local frlgCache = frlgAdapter:updateBattleInfo()
+    T.eq(frlgCache.player.partyBalls[1], "ok", "FRLG player pip 1 is a healthy party mon")
+    T.eq(frlgCache.player.partyBalls[2], "fainted", "FRLG player pip 2 is fainted")
+    T.eq(frlgCache.player.partyBalls[3], "status", "FRLG player pip 3 is statused")
+    T.eq(frlgCache.player.partyBalls[4], "empty", "FRLG player pip 4 is an empty slot")
+    T.eq(frlgCache.enemy.partyBalls[1], "ok", "FRLG foe pip 1 is occupied")
+    T.eq(frlgCache.enemy.partyBalls[2], "ok", "FRLG foe pip 2 shows the rest of their party")
+    T.eq(frlgCache.enemy.partyBalls[3], "empty", "FRLG foe pip 3 is empty")
+    T.eq(frlgCache.playerMonOut, true, "without a live fight, player HUD cards are allowed")
+    T.eq(frlgCache.enemyMonOut, true, "without a live fight, foe HUD cards are allowed")
+    do
+      local battleSt = mockFrlg.stack.states[1]
+      local prevBattle = package.loaded["src.core.game3.battle"]
+      local prevAnim = package.loaded["src.core.game3.battle.anim"]
+      local boxes = {
+        player = { visible = false },
+        enemy = { visible = false },
+      }
+      package.loaded["src.core.game3.battle"] = {
+        isActive = function() return true end,
+        getState = function() return battleSt end,
+      }
+      package.loaded["src.core.game3.battle.anim"] = {
+        stage = function()
+          return { healthbox = boxes }
+        end,
+      }
+      local intro = Gen3Adapter.new(mockFrlg):updateBattleInfo()
+      T.eq(intro.playerMonOut, false, "player HUD waits until send-out")
+      T.eq(intro.enemyMonOut, false, "foe HUD waits until send-out")
+      boxes.player.visible = true
+      boxes.enemy.visible = true
+      local sent = Gen3Adapter.new(mockFrlg):updateBattleInfo()
+      T.eq(sent.playerMonOut, true, "player HUD appears after send-out")
+      T.eq(sent.enemyMonOut, true, "foe HUD appears after send-out")
+      package.loaded["src.core.game3.battle"] = prevBattle
+      package.loaded["src.core.game3.battle.anim"] = prevAnim
+    end
+    BattleRenderer._hpTween = {}
+    local first = BattleRenderer.tweenHp("test", 40, 40, "CHARMANDER")
+    T.eq(first, 40, "HP tween snaps to the opening value")
+    local now = (love and love.timer and love.timer.getTime and love.timer.getTime()) or os.clock()
+    BattleRenderer._hpTween.test.t = now - 0.2
+    local mid = BattleRenderer.tweenHp("test", 10, 40, "CHARMANDER")
+    T.eq(mid < 40 and mid > 10, true, "HP tween interpolates a drain instead of jumping")
+    now = (love and love.timer and love.timer.getTime and love.timer.getTime()) or os.clock()
+    BattleRenderer._hpTween.test.t = now - 0.1
+    local heal = BattleRenderer.tweenHp("test", 40, 40, "CHARMANDER")
+    T.eq(heal > mid and heal <= 40, true, "HP tween interpolates a heal instead of jumping")
+  end
 
   -- 4b. Gen 2 Battle State Synchronization Verification
   local mockGen2Game = {
@@ -2065,14 +2268,21 @@ do
   Theme.setTheme("dark", 0)
   local list = Theme.list()
   T.eq(#list >= 6, true, "Theme.list discovers all installed themes")
-  
+  Theme.REGISTRY["zz_extra_theme"] = { id = "zz_extra_theme", label = "Extra" }
+  local foundExtra = false
+  for _, t in ipairs(Theme.list()) do
+    if t.id == "zz_extra_theme" then foundExtra = true end
+  end
+  Theme.REGISTRY["zz_extra_theme"] = nil
+  T.eq(foundExtra, true, "Theme.list includes themes outside the preferred order")
+
   -- Cycle all the way forward back to start
   local seqForward = {}
   for _ = 1, #list do
     local nextT = Theme.cycleTheme(1, 0)
     seqForward[#seqForward + 1] = nextT
   end
-  T.eq(Theme.currentThemeId, "dark", "Theme.cycleTheme(1) full loop returns to start")
+  T.eq(Theme.currentThemeId, "dark-modern", "Theme.cycleTheme(1) full loop returns to start")
   
   -- Cycle backward
   local prevT = Theme.cycleTheme(-1, 0)
@@ -3626,15 +3836,16 @@ do
       T.eq(#miltankNorm.fieldMoves >= 2, true, "Miltank has MILK_DRINK and HEADBUTT as Gen 2 field moves")
       T.eq(#mareepNorm.fieldMoves >= 1, true, "Mareep has FLASH as field move")
 
-      -- E. Test 4-Pocket Bag System & TM Move Lookup
+      -- E. Test 5-Pocket Bag System & TM Move Lookup
       local pockets = adapter:getBagPockets()
-      T.eq(#pockets, 4, "Gen2Adapter provides exactly 4 pockets (ITEM, BALL, KEY_ITEM, TM_HM)")
+      T.eq(#pockets, 5, "Gen2Adapter provides 5 pockets (ITEM, MEDICINE, BALL, KEY_ITEM, TM_HM)")
       T.eq(pockets[1].id, "ITEM", "Pocket 1 is ITEM")
-      T.eq(pockets[2].id, "BALL", "Pocket 2 is BALL")
-      T.eq(pockets[3].id, "KEY_ITEM", "Pocket 3 is KEY_ITEM")
-      T.eq(pockets[4].id, "TM_HM", "Pocket 4 is TM_HM")
+      T.eq(pockets[2].id, "MEDICINE", "Pocket 2 is MEDICINE")
+      T.eq(pockets[3].id, "BALL", "Pocket 3 is BALL")
+      T.eq(pockets[4].id, "KEY_ITEM", "Pocket 4 is KEY_ITEM")
+      T.eq(pockets[5].id, "TM_HM", "Pocket 5 is TM_HM")
 
-      local tmEntry = pockets[4].items[1]
+      local tmEntry = pockets[5].items[1]
       T.eq(tmEntry.isTM, true, "TM entry isTM flag is true")
       T.eq(tmEntry.teaches, "HEADBUTT", "TM02 teaches HEADBUTT")
       T.eq(tmEntry.moveName, "HEADBUTT", "TM02 enriched with moveName HEADBUTT")
@@ -5525,6 +5736,8 @@ do
     T.eq(memo, "CALM nature. Met in PALLET TOWN at Lv. 5.", "Trainer memo prints the Lv glyph instead of {LV_2}")
     T.eq(cleanText:find("\f"), nil, "Cleaned text contains no form feed control characters")
     T.eq(cleanText:find("\v"), nil, "Cleaned text contains no vertical tab control characters")
+    T.eq(Layout.cleanText("< DARK MODERN >"), "", "angle-bracket wrappers are stripped as GBA tags")
+    T.eq(Layout.cleanText("◄ DARK MODERN ►"), "◄ DARK MODERN ►", "triangle choice chrome keeps the theme name")
 
     -- 10b. GenderSelect
     local mockGenderState = {
@@ -6217,17 +6430,22 @@ end
       T.eq(oakDiag and oakDiag.speaker, "PROF. OAK", "Oak speech has PROF. OAK speaker nameplate")
       T.eq(oakDiag and oakDiag.pages[1], "Hello, there!\nWelcome to POKéMON!", "Oak speech passes paged text")
 
-      -- FireRed name choice menu
+      -- FireRed name choice menu (pokefirered oak_speech.c:2117 window 2,2,12,10)
       mockOakSpeech.win.menu = {
-        items = { { "NEW NAME" }, { "RED" }, { "ASH" } },
+        kind = "names",
+        items = { { "NEW NAME" }, { "GREEN" }, { "GARY" }, { "KAZ" }, { "TORU" } },
         cursor = 1,
-        left = 2,
+        left = 2, top = 2, width = 12, height = 10,
       }
       local _, _, _, oakMenuChoice = ModernOverlay.getActiveScreen(gameBootOak)
       T.eq(oakMenuChoice ~= nil, true, "Oak name choices produce choice subState")
-      T.eq(oakMenuChoice and #oakMenuChoice.options, 3, "Oak name choices has 3 options")
-      T.eq(oakMenuChoice and oakMenuChoice.options[2], "RED", "Oak option 2 is RED")
+      T.eq(oakMenuChoice and #oakMenuChoice.options, 5, "Oak name choices has NEW NAME + 4 presets")
+      T.eq(oakMenuChoice and oakMenuChoice.options[2], "GREEN", "Oak option 2 is GREEN")
       T.eq(oakMenuChoice and oakMenuChoice.cursor, 2, "Oak cursor is 2")
+      T.eq(oakMenuChoice and oakMenuChoice.kind, "names", "FRLG names menu keeps kind=names")
+      T.eq(oakMenuChoice and oakMenuChoice.left, 2, "Name pick keeps original tile left")
+      T.eq(oakMenuChoice and oakMenuChoice.width, 12, "Name pick keeps original tile width")
+      T.eq(oakMenuChoice and oakMenuChoice.height, 10, "Name pick keeps original tile height")
 
       -- Test G: DialogueRenderer rendering Gen 3 Birch speech with lines array
       local DialogueRenderer = require("mods.omni_ui.renderers.DialogueRenderer")
@@ -6235,8 +6453,76 @@ end
       T.eq(okRenderBirch, true, "DialogueRenderer successfully renders Gen 3 Birch speech with modern card & left choice modal")
 
       -- Test H: DialogueRenderer rendering Gen 3 Oak speech with paged text
+      local Layout = require("mods.omni_ui.core.Layout")
+      local nameCards = {}
+      local origDrawCard = Layout.drawCard
+      Layout.drawCard = function(x, y, w, h, ...)
+        nameCards[#nameCards + 1] = { x = x, y = y, w = w, h = h }
+        return origDrawCard(x, y, w, h, ...)
+      end
       local okRenderOak = pcall(DialogueRenderer.draw, gameBootOak, oakDiag, 800, 600, curTheme, oakMenuChoice)
+      Layout.drawCard = origDrawCard
       T.eq(okRenderOak, true, "DialogueRenderer successfully renders Gen 3 Oak speech with paged text & choice modal")
+      local vw, vh = 800, 600
+      local gameW = math.min(vw, math.floor(vh * (240 / 160)))
+      local gameH = math.min(vh, math.floor(vw * (160 / 240)))
+      local gx = math.floor((vw - gameW) / 2)
+      local gy = math.floor((vh - gameH) / 2)
+      local tile = (gameW / 240) * 8
+      local expectX = math.floor(gx + 2 * tile)
+      local expectY = math.floor(gy + 2 * tile)
+      local expectW = math.floor(12 * tile)
+      local expectH = math.floor(10 * tile)
+      local nameCard = nil
+      for i = #nameCards, 1, -1 do
+        local c = nameCards[i]
+        if c.w == expectW and c.h == expectH then
+          nameCard = c
+          break
+        end
+      end
+      T.eq(nameCard ~= nil, true, "Oak name pick draws a modal card")
+      T.eq(nameCard and nameCard.x, expectX, "Oak name pick x matches original tile 2")
+      T.eq(nameCard and nameCard.y, expectY, "Oak name pick y matches original tile 2")
+      T.eq(nameCard and nameCard.w, expectW, "Oak name pick width matches original 12 tiles")
+      T.eq(nameCard and nameCard.h, expectH, "Oak name pick height matches original 10 tiles")
+
+      -- FRLG Oak confirm uses a one-glyph ellipsis; byte-slicing revealed
+      -- used to clip GREEN to GREE.
+      local ellipsisLine = "…Er, was it GREEN?"
+      T.eq(#ellipsisLine > 18, true, "ellipsis confirm line is longer in bytes than glyph count")
+      T.eq(ellipsisLine:sub(1, 18):find("GREEN", 1, true), nil, "byte sub of 18 glyphs clips GREEN")
+      T.eq(DialogueRenderer.utf8Len(ellipsisLine), 18, "ellipsis confirm line is 18 glyphs")
+      T.eq(DialogueRenderer.utf8Sub(ellipsisLine, 18):find("GREEN", 1, true) ~= nil, true, "utf8 slice of 18 glyphs keeps GREEN")
+      local printedOak = {}
+      local origDrawText = Layout.drawText
+      Layout.drawText = function(text, ...)
+        printedOak[#printedOak + 1] = tostring(text or "")
+        return origDrawText(text, ...)
+      end
+      local oakConfirmState = {
+        speaker = "PROF. OAK",
+        pages = { ellipsisLine },
+        page = 1,
+        revealed = DialogueRenderer.utf8Len(ellipsisLine),
+        printer = {
+          pages = { ellipsisLine },
+          page = 1,
+          revealed = DialogueRenderer.utf8Len(ellipsisLine),
+          active = false,
+          state = "char",
+        },
+      }
+      local okConfirm = pcall(DialogueRenderer.draw, gameBootOak, oakConfirmState, 800, 600, curTheme, {
+        isChoiceBox = true, options = { "YES", "NO" }, cursor = 1,
+      })
+      Layout.drawText = origDrawText
+      T.eq(okConfirm, true, "Oak confirm line renders with YES/NO")
+      local sawGreen = false
+      for _, t in ipairs(printedOak) do
+        if t:find("GREEN", 1, true) then sawGreen = true break end
+      end
+      T.eq(sawGreen, true, "Oak speech keeps the full rival name instead of clipping GREE")
 
       -- Test I: NamingRenderer.attachControls robustness against number dt parameter
       local testNamingState = { name = "BRENDAN", maxLen = 7, template = "PLAYER" }
@@ -6514,6 +6800,14 @@ end
         G3PartyMenuMod._summaryIcon = 14
         G3PartyMenuMod.draw()
         T.eq(destroyedOam, true, "G3PartyMenu.draw cleans up native OAM sprites to avoid rendering over modern UI")
+        destroyedOam = false
+        G3PartyMenuMod._oam = {
+          { mon = 20, ball = 21, status = 22, item = 23 }
+        }
+        G3PartyMenuMod._summaryIcon = 24
+        if G3PartyMenuMod.update then G3PartyMenuMod.update(0) end
+        T.eq(destroyedOam, true, "G3PartyMenu.update tears down native OAM so overworld flush cannot draw the OG party ball/sprite")
+        T.eq(G3PartyMenuMod._oam, nil, "native party OAM table is cleared while Omni overlay is on")
       end
 
       -- Test 13: render.hud hook executes cleanly during Gen 3 boot menu phase
@@ -8406,6 +8700,25 @@ do
     T.eq(dialogWaiting, true, "Battle console knows the dialog is waiting for A")
     local dialogKind = ModernOverlay.getActiveScreen({})
     T.eq(dialogKind, "battle", "A battle-frame dialog stays on the battle screen")
+    Message._frame = "voiceover"
+    Message._pages = { "Inflicting damage on the foe\nis the key to any battle." }
+    Message._page = 1
+    Message._revealed = 40
+    Message._waiting = true
+    local voiceKind, _, _, voiceSub = ModernOverlay.getActiveScreen({})
+    T.eq(voiceKind, "battle", "Oak tutorial voiceover stays on the battle screen")
+    T.eq(voiceSub ~= nil, true, "Oak tutorial voiceover is overlaid on battle chrome")
+    T.eq(voiceSub and voiceSub.speaker, "OAK", "Oak tutorial voiceover keeps the OAK nameplate")
+    T.eq(ModernOverlay.isBattleDialogueOverlay(voiceSub), true, "Oak tutorial is a battle dialogue overlay")
+    local drewVoice = pcall(function()
+      BattleRenderer.draw({ gameVersion = "firered", data = Data }, Battle._st, 960, 640, optTheme, voiceSub, {
+        gameX = 40, gameY = 20, gameWidth = 880, gameHeight = 600,
+      })
+      ModernOverlay.drawDialogue({ gameVersion = "firered", data = Data }, voiceSub, 960, 640, optTheme, nil, {
+        gameX = 40, gameY = 20, gameWidth = 880, gameHeight = 600,
+      })
+    end)
+    T.eq(drewVoice, true, "Battle chrome plus Oak tutorial dialog draws together")
     local drewDialog = pcall(BattleRenderer.draw, { gameVersion = "emerald", data = Data }, Battle._st, 960, 640, optTheme, nil, {
       gameX = 40, gameY = 20, gameWidth = 880, gameHeight = 600,
     })
@@ -8676,7 +8989,388 @@ local function testMenuAnimations()
     run.loader.modOptions.omni_ui = nil
   end
 end
-testMenuAnimations()
+local function testNewFeaturesAndFixes()
+  local ItemDatabase = require("mods.omni_ui.core.ItemDatabase")
+  local Gen2Adapter = require("mods.omni_ui.adapters.Gen2Adapter")
+  local Gen1Adapter = require("mods.omni_ui.adapters.Gen1Adapter")
+  local Gen3Adapter = require("mods.omni_ui.adapters.Gen3Adapter")
+  local ModernOverlay = require("mods.omni_ui.core.ModernOverlay")
+
+  -- 1. Medicine items detection
+  T.eq(ItemDatabase.isMedicineItem("POTION"), true, "POTION is medicine item")
+  T.eq(ItemDatabase.isMedicineItem("FULL_RESTORE"), true, "FULL_RESTORE is medicine item")
+  T.eq(ItemDatabase.isMedicineItem("REVIVE"), true, "REVIVE is medicine item")
+  T.eq(ItemDatabase.isMedicineItem("ANTIDOTE"), true, "ANTIDOTE is medicine item")
+  T.eq(ItemDatabase.isMedicineItem("ETHER"), true, "ETHER is medicine item")
+  T.eq(ItemDatabase.isMedicineItem("POKE_BALL"), false, "POKE_BALL is not medicine")
+  T.eq(ItemDatabase.isMedicineItem("BICYCLE"), false, "BICYCLE is not medicine")
+  T.eq(ItemDatabase.isMedicineItem("FIRE_STONE"), false, "FIRE_STONE is not medicine")
+  T.eq(ItemDatabase.isMedicineItem("TM01"), false, "TM01 is not medicine")
+
+  -- 2. Gen2Adapter Bag Pockets: ITEM, MEDICINE, BALL, KEY_ITEM, TM_HM
+  local mockG2Game = {
+    save = {
+      inventory = {
+        { id = "POTION", count = 3 },
+        { id = "ESCAPE_ROPE", count = 1 },
+      }
+    }
+  }
+  local g2Inst = setmetatable({ game = mockG2Game }, { __index = Gen2Adapter })
+  local pockets = g2Inst:getBagPockets()
+  T.eq(#pockets, 5, "Gen 2 adapter has 5 pockets including MEDICINE")
+  T.eq(pockets[1].id, "ITEM", "Pocket 1 is ITEM")
+  T.eq(pockets[2].id, "MEDICINE", "Pocket 2 is MEDICINE")
+  T.eq(pockets[3].id, "BALL", "Pocket 3 is BALL")
+  T.eq(pockets[4].id, "KEY_ITEM", "Pocket 4 is KEY_ITEM")
+  T.eq(pockets[5].id, "TM_HM", "Pocket 5 is TM_HM")
+  T.eq(#pockets[2].items, 1, "POTION placed in MEDICINE pocket")
+  T.eq(pockets[2].items[1].id, "POTION", "Medicine item is POTION")
+  T.eq(#pockets[1].items, 1, "ESCAPE_ROPE remains in ITEM pocket")
+  T.eq(pockets[1].items[1].id, "ESCAPE_ROPE", "Remaining item is ESCAPE_ROPE")
+
+  -- 3. Box capacity expansion detection
+  local g2GameNormal = { save = { boxes = { { count = 12 } } } }
+  local g2GameExpanded = { save = { boxes = { { count = 28 } } } }
+  T.eq(Gen2Adapter:getBoxCapacity(g2GameNormal), 20, "Gen 2 normal box capacity is 20")
+  T.eq(Gen2Adapter:getBoxCapacity(g2GameExpanded), 28, "Gen 2 expanded box capacity detects 28")
+
+  local g1GameNormal = { save = { boxes = { { count = 10 } } } }
+  local g1GameExpanded = { save = { boxes = { { count = 30 } } } }
+  T.eq(Gen1Adapter:getBoxCapacity(g1GameNormal), 20, "Gen 1 normal box capacity is 20")
+  T.eq(Gen1Adapter:getBoxCapacity(g1GameExpanded), 30, "Gen 1 expanded box capacity detects 30")
+
+  local g3GameNormal = { save = { boxes = { { count = 15 } } } }
+  local g3GameExpanded = { save = { boxes = { { count = 40 } } } }
+  T.eq(Gen3Adapter:getBoxCapacity(g3GameNormal), 30, "Gen 3 normal box capacity is 30")
+  T.eq(Gen3Adapter:getBoxCapacity(g3GameExpanded), 40, "Gen 3 expanded box capacity detects 40")
+
+  -- 4. Boxed Pokémon HP defaults to maxHp when hp is nil
+  local boxedMonG2 = { species = "PIKACHU", level = 25, maxHp = 70 } -- no hp field
+  local normG2 = Gen2Adapter:normalizeMon(boxedMonG2)
+  T.eq(normG2.currentHp, 70, "Gen 2 boxed mon with nil hp defaults to maxHp")
+  T.eq(normG2.hp, 70, "Gen 2 boxed mon hp field defaults to maxHp")
+
+  local faintedMonG1 = { species = "CHARMANDER", level = 10, hp = 0, maxHp = 30 }
+  local normG1 = Gen1Adapter:normalizeMon(faintedMonG1)
+  T.eq(normG1.currentHp, 0, "Fainted mon with hp=0 keeps 0")
+
+  -- 5. Mod Menu opened from StartMenu does not show StartMenu underneath
+  local startMenuState = {
+    isStartMenu = true,
+    isMenu = true,
+    items = { "POKEDEX", "POKEMON", "ITEM", "SAVE", "OPTION" },
+    index = 1,
+  }
+  local modMenuState = {
+    isMenu = true,
+    title = "CUSTOM MOD MENU",
+    items = { "Option A", "Option B" },
+    index = 1,
+  }
+  local gameWithModMenu = {
+    stack = {
+      states = { startMenuState, modMenuState },
+      top = function(self) return self.states[#self.states] end,
+    }
+  }
+  local activeKind, activeState, extra, subState = ModernOverlay.getActiveScreen(gameWithModMenu)
+  T.eq(activeKind, "menu", "Mod menu on top of start menu returns menu kind alone")
+  T.eq(activeState, modMenuState, "Active state is modMenuState")
+  T.eq(subState, nil, "SubState is nil so start menu is not rendered underneath")
+
+  -- 6. SpriteHelper resolves sprites from g9-battle-sprites mod
+  local SpriteHelper = require("mods.omni_ui.core.SpriteHelper")
+  local mockMod = {
+    loader = {
+      exports = {
+        ["g9-battle-sprites"] = {
+          frontArt = function(monParam) return "dummy_front_art", 64, 64 end,
+          iconArtHD = function(monParam) return "dummy_quad", "dummy_atlas", 64, { x=4, y=4, w=56, h=56 } end,
+        }
+      }
+    }
+  }
+  SpriteHelper.setMod(mockMod)
+  local frontRes = SpriteHelper.resolveSprite(nil, "SPRIGATITO", "front", nil)
+  T.eq(frontRes.image, "dummy_front_art", "Front sprite resolved from g9-battle-sprites")
+  T.eq(frontRes.trueColor, true, "g9 battle sprite is marked trueColor")
+
+  local partyRes = SpriteHelper.resolveSprite(nil, "CERULEDGE", "front", { kind = "party" })
+  T.eq(partyRes.image, "dummy_front_art", "Party sprite resolved from g9-battle-sprites frontArt")
+  T.eq(partyRes.trueColor, true, "g9 frontArt is marked trueColor")
+
+  -- Prefer g9 frontArt over a vanilla ROM path when both exist
+  local vanillaPathRes = SpriteHelper.resolveSprite({
+    pokemon = { PIKACHU = { spriteFront = "assets/generated/battle/front/pikachu.png" } },
+  }, "PIKACHU", "front", { kind = "party" })
+  T.eq(vanillaPathRes.image, "dummy_front_art", "g9 frontArt wins over a vanilla sprite path")
+
+  T.eq(SpriteHelper.hostGeneration({ generation = 1 }), 1, "hostGeneration reads data.generation")
+  T.eq(SpriteHelper.hostGeneration({ gen2Palettes = {} }), 2, "hostGeneration treats gen2 palettes as gen 2")
+  T.eq(SpriteHelper.hostGeneration({}, { generation = 3 }), 3, "hostGeneration reads opts.generation")
+
+  -- Gen 1/2 box art must not fall through to g9 / Gen 3 icon sheets (two
+  -- stacked frames, often the wrong species class).
+  do
+    local origGet = SpriteHelper.getImage
+    local dummyFront = { _kind = "rom_front", getDimensions = function() return 40, 40 end }
+    SpriteHelper.getImage = function(path)
+      if type(path) == "string" and path:find("diglett", 1, true) then return dummyFront end
+      return origGet(path)
+    end
+    SpriteHelper.setMod({
+      loader = {
+        exports = {
+          ["g9-battle-sprites"] = {
+            frontArt = function() return nil end,
+            iconArt16 = function()
+              return { full = "icon_quad" }, "icon_atlas", 16
+            end,
+          }
+        }
+      }
+    })
+    local gen1Data = {
+      generation = 1,
+      pokemon = { DIGLETT = { spriteFront = "assets/generated/battle/front/diglett.png" } },
+    }
+    local boxRes = SpriteHelper.resolveSprite(gen1Data, "DIGLETT", "front", {
+      kind = "box", generation = 1,
+    })
+    T.eq(boxRes.image, dummyFront, "Gen 1 box uses ROM front pic, not g9 icon atlas")
+    T.eq(boxRes.trueColor, false, "Gen 1 ROM front pic is paletted, not a trueColor icon")
+
+    local partyResG1 = SpriteHelper.resolveSprite(gen1Data, "DIGLETT", "front", {
+      kind = "party", generation = 1,
+    })
+    T.eq(partyResG1.image, dummyFront, "Gen 1 party also keeps front pics, not icons")
+
+    local g3Icon = SpriteHelper.resolveSprite({}, "OMNI_FAKE_MON", "front", {
+      kind = "icon", generation = 3,
+    })
+    T.eq(g3Icon.image, "icon_atlas", "Gen 3 icon kind falls back to g9 when engine/hooks have no art")
+
+    SpriteHelper.getImage = origGet
+    SpriteHelper.setMod(mockMod)
+  end
+
+  -- Gen 3 party/box icons go through pokemon.icon and icons.bySpecies so
+  -- other mods that replace or add art are absorbed (g9 is not a hard wire).
+  do
+    local Runtime = require("src.mods.Runtime")
+    local origGet = SpriteHelper.getImage
+    local origHooks = Runtime.hooks
+    local modIcon = { _mod = "icon", getDimensions = function() return 32, 64 end }
+    local registryIcon = { _mod = "registry", getDimensions = function() return 32, 32 end }
+    local hookSprite = { _mod = "sprite", getDimensions = function() return 64, 64 end }
+    SpriteHelper.getImage = function(path)
+      if path == "assets/mod_icon.png" then return modIcon end
+      if path == "mods/example/custom_icon.png" then return registryIcon end
+      if path == "assets/hook_front.png" then return hookSprite end
+      return origGet(path)
+    end
+    SpriteHelper.setMod({
+      loader = {
+        exports = {
+          ["g9-battle-sprites"] = {
+            frontArt = function() return "dummy_front_art", 64, 64 end,
+            iconArt16 = function()
+              return { full = "icon_quad" }, "icon_atlas", 16
+            end,
+          }
+        }
+      }
+    })
+
+    Runtime.hooks = {
+      chains = { ["pokemon.icon"] = { 1 } },
+      call = function(_, name, vanilla, path, ctx)
+        if name == "pokemon.icon" then
+          if ctx then ctx.trueColor = true end
+          return "assets/mod_icon.png"
+        end
+        return vanilla(path)
+      end,
+    }
+    local hookedIcon = SpriteHelper.resolveSprite({ generation = 3 }, "PIKACHU", "front", {
+      kind = "icon", generation = 3, mon = { species = "PIKACHU" },
+    })
+    T.eq(hookedIcon.image, modIcon, "pokemon.icon hook wins over g9 icon atlas on Gen 3")
+
+    Runtime.hooks = origHooks
+    local registry = SpriteHelper.resolveSprite({
+      generation = 3,
+      icons = { bySpecies = { PIKACHU = { image = "mods/example/custom_icon.png", trueColor = true } } },
+      pokemon = { PIKACHU = { spriteFront = "unused.png" } },
+    }, "PIKACHU", "front", {
+      kind = "icon", generation = 3, mon = { species = "PIKACHU" },
+    })
+    T.eq(registry.image, registryIcon, "icons.bySpecies replacement is used for Gen 3 box/party icons")
+
+    Runtime.hooks = {
+      chains = { ["pokemon.sprite"] = { 1 } },
+      call = function(_, name, vanilla, path, ctx)
+        if name == "pokemon.sprite" then
+          if ctx then ctx.trueColor = true end
+          return "assets/hook_front.png"
+        end
+        return vanilla(path)
+      end,
+    }
+    local hookedFront = SpriteHelper.resolveSprite({
+      pokemon = { NEWMON = { spriteFront = "assets/generated/battle/front/newmon.png" } },
+    }, "NEWMON", "front", { kind = "summary", generation = 1 })
+    T.eq(hookedFront.image, hookSprite, "pokemon.sprite hook wins over g9 frontArt")
+
+    Runtime.hooks = origHooks
+    SpriteHelper.getImage = origGet
+    SpriteHelper.setMod(mockMod)
+  end
+
+  -- 7. Layout.textHeight includes font descent
+  local Layout = require("mods.omni_ui.core.Layout")
+  local th = Layout.textHeight("body")
+  T.eq(th >= 12, true, "Layout textHeight includes font descent")
+
+  -- 8. Gen 2 PackMenu medicine virtual pocket via attachBagControls
+  do
+    local okPack, PackMenu = pcall(require, "src.ui.gen2.PackMenu")
+    if okPack and PackMenu and PackMenu.new then
+      local packGame = {
+        gameVersion = "crystal",
+        save = {
+          inventory = {
+            POTION = 3,
+            ESCAPE_ROPE = 1,
+            POKE_BALL = 5,
+          },
+        },
+        data = {
+          items = {
+            POTION = { name = "POTION", pocket = "ITEM" },
+            ESCAPE_ROPE = { name = "ESCAPE ROPE", pocket = "ITEM" },
+            POKE_BALL = { name = "POKé BALL", pocket = "BALL" },
+          },
+          audio = { sfx = {} },
+        },
+        input = {
+          _pressed = {},
+          wasPressed = function(self, key) return self._pressed[key] == true end,
+        },
+      }
+      local pack = PackMenu.new(packGame, {})
+      ModernOverlay.attachBagControls(pack, packGame)
+      T.eq(pack.__omniPackSplit, true, "Gen 2 pack gets medicine split controls")
+      T.eq(pack.__omniVisualPocket, 1, "Gen 2 pack starts on visual ITEMS")
+      local itemIds = {}
+      for _, row in ipairs(pack.rows or {}) do itemIds[#itemIds + 1] = row.id end
+      T.eq(itemIds[1], "ESCAPE_ROPE", "ITEMS view hides medicine (ESCAPE_ROPE remains)")
+      T.eq(#itemIds, 1, "ITEMS view has only non-medicine items")
+
+      pack:switchPocket(1)
+      T.eq(pack.__omniVisualPocket, 2, "switchPocket enters MEDICINE visual pocket")
+      T.eq(pack.pocketIndex, 1, "MEDICINE still uses native ITEM pocket")
+      T.eq(pack.rows[1] and pack.rows[1].id, "POTION", "MEDICINE view lists POTION")
+      T.eq(#pack.rows, 1, "MEDICINE view is only medicine items")
+
+      pack:switchPocket(1)
+      T.eq(pack.__omniVisualPocket, 3, "Next tab is BALLS")
+      T.eq(pack.pocketIndex, 2, "BALLS maps to native pocket 2")
+      T.eq(pack.rows[1] and pack.rows[1].id, "POKE_BALL", "BALLS lists POKE_BALL")
+
+      local BagRenderer = require("mods.omni_ui.renderers.BagRenderer")
+      local Theme = require("mods.omni_ui.core.Theme")
+      local okDraw = pcall(BagRenderer.draw, packGame, pack, 800, 600, Theme.get())
+      T.eq(okDraw, true, "BagRenderer draws Gen 2 pack with medicine tabs")
+    end
+  end
+
+  -- 9. StorageController clamps right-edge on partial last rows
+  do
+    local StorageController = require("mods.omni_ui.core.StorageController")
+    local boxes = {}
+    for i = 1, 14 do boxes[i] = { count = 28 } end
+    local ctrl = StorageController.new({
+      gameVersion = "gold",
+      data = { audio = { sfx = {} } },
+      save = {
+        currentBox = 1,
+        party = {},
+        boxes = boxes,
+      },
+    })
+    -- Expanded box: capacity detected from count, last row is partial (slots 25-28).
+    T.eq(ctrl.boxCapacity >= 28, true, "Expanded Gen 2 box capacity detects 28+")
+    ctrl.zone = "box"
+    ctrl.boxSlot = ctrl.boxCapacity
+    local beforeBox = ctrl.currentBoxId
+    local fakeRight = { wasPressed = function(_, k) return k == "right" end }
+    ctrl:handleBrowseInput(fakeRight, false)
+    T.eq(ctrl.boxSlot <= ctrl.boxCapacity, true, "Right from last expanded slot stays within capacity")
+    T.eq(ctrl.boxSlot >= 1, true, "Right from last expanded slot lands on a valid slot")
+    T.eq(ctrl.currentBoxId ~= beforeBox, true, "Right from last slot cycles to the next box")
+  end
+end
+testNewFeaturesAndFixes()
+
+-- FRLG Berry Pouch / Kanto-Reforged planting must use the bag overlay, not a blank menu.
+do
+  local BerryPouch = require("src.ui.game3.berry_pouch")
+  local Stack = require("src.ui.game3.stack")
+  local BagRenderer = require("mods.omni_ui.renderers.BagRenderer")
+  local prevLayers = Stack._layers
+  Stack._layers = {}
+
+  T.eq(ModernOverlay.isSupported({ screenId = "berry_pouch", isMenu = true }), "bag",
+    "Berry pouch screenId routes to bag, not generic menu")
+  T.eq(ModernOverlay.isSupported({ isMenu = true, _plantMode = true, list = function() return {} end }), "bag",
+    "Kanto-Reforged plant-mode pouch routes to bag")
+
+  local prevOpen = BerryPouch.open
+  BerryPouch.open = true
+  BerryPouch._plantMode = true
+  BerryPouch.location = "berry_tree"
+  BerryPouch._location = "berry_tree"
+  BerryPouch.ACTIONS = { "PLANT", "CANCEL" }
+  BerryPouch.mode = "list"
+  BerryPouch.cursor = 1
+  BerryPouch._bag = { pockets = { BERRY_POUCH = { { id = "ORAN_BERRY", qty = 3 } } } }
+  Stack._layers = { { id = "berry_pouch", mod = BerryPouch, hideBelow = true, fullscreen = true } }
+
+  T.eq(ModernOverlay.isSupported(BerryPouch), "bag", "Live BerryPouch module is a bag overlay")
+  local kind, active = ModernOverlay.getActiveScreen({ phase = "field" })
+  T.eq(kind, "bag", "getActiveScreen maps berry_pouch stack layer to bag")
+  T.eq(active, BerryPouch, "getActiveScreen returns the BerryPouch module")
+
+  local attached = BerryPouch.__omniUiControlsAttached
+  BerryPouch.__omniUiControlsAttached = nil
+  ModernOverlay.attachControls(BerryPouch, { gameVersion = "firered", save = {}, session = {} })
+  T.eq(BerryPouch.__omniUiControlsAttached, true, "Planting pouch marks controls attached without Gen1 rebuild")
+  T.eq(type(BerryPouch.list), "function", "BerryPouch.list remains native after Omni attach")
+
+  local plantState = {
+    screenId = "berry_pouch",
+    _plantMode = true,
+    location = "berry_tree",
+    mode = "action",
+    actionCursor = 1,
+    ACTIONS = { "PLANT", "CANCEL" },
+    cursor = 1,
+    list = function() return { { id = "ORAN_BERRY", name = "ORAN BERRY", qty = 3 } } end,
+  }
+  T.eq(ModernOverlay.isSupported(plantState), "bag", "Plant action pouch still classifies as bag")
+  local okDraw = pcall(BagRenderer.draw, { gameVersion = "firered", save = {}, data = Data }, plantState, 800, 600, Theme.get(), nil, 1)
+  T.eq(okDraw, true, "BagRenderer draws planting berry pouch without error")
+
+  BerryPouch.open = prevOpen
+  BerryPouch._plantMode = false
+  BerryPouch.location = nil
+  BerryPouch._location = nil
+  BerryPouch.ACTIONS = { "USE", "GIVE", "TOSS", "EXIT" }
+  BerryPouch.__omniUiControlsAttached = attached
+  Stack._layers = prevLayers
+end
 
 -- Reset back to default dark theme
 Theme.setTheme("dark")

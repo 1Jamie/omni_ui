@@ -4,14 +4,133 @@
 
 local Layout = require("mods.omni_ui.core.Layout")
 local Theme = require("mods.omni_ui.core.Theme")
+local SpriteHelper = require("mods.omni_ui.core.SpriteHelper")
 
 local DialogueRenderer = {}
+
+-- GBA/FRLG dialogue often starts with a one-glyph ellipsis (U+2026, 3 bytes).
+-- The live printer counts UTF-8 characters; Lua # / string.sub count bytes.
+local UTF8_CHAR = "[%z\1-\127\194-\244][\128-\191]*"
+
+function DialogueRenderer.utf8Len(s)
+  local n = 0
+  for _ in tostring(s or ""):gmatch(UTF8_CHAR) do
+    n = n + 1
+  end
+  return n
+end
+
+function DialogueRenderer.utf8Sub(s, n)
+  s = tostring(s or "")
+  n = tonumber(n)
+  if not n then return s end
+  if n <= 0 then return "" end
+  local out = {}
+  local count = 0
+  for ch in s:gmatch(UTF8_CHAR) do
+    count = count + 1
+    if count > n then break end
+    out[#out + 1] = ch
+  end
+  return table.concat(out)
+end
+
+local function revealedSlice(cleanStr, revealed, done)
+  if done or type(revealed) ~= "number" then return cleanStr end
+  return DialogueRenderer.utf8Sub(cleanStr, revealed)
+end
+
+-- The box is already showing the finished page. Complete the live
+-- typewriter so the A prompt is real, not stuck behind hidden characters.
+function DialogueRenderer.finishInstantReveal(state)
+  if type(state) ~= "table" then return end
+  if state._waiting or state.waiting or state.done then return end
+  local skip = state.skipReveal
+  if type(skip) == "function" then
+    skip()
+    return
+  end
+  local finish = state.finishReveal
+  if type(finish) == "function" then
+    finish(state)
+    return
+  end
+  if type(state._total) == "number" and type(state._revealed) == "number" and state._revealed < state._total then
+    state._revealed = state._total
+    state._delay = 0
+    state._waiting = true
+    return
+  end
+  if type(state.beginLine) ~= "function" or type(state.pages) ~= "table" then return end
+  local page = state.pages[state.pageIndex]
+  if type(page) ~= "table" then
+    state.done = true
+    return
+  end
+  state.pauseMark, state.pauseFrames, state.scrollPx = nil, 0, nil
+  for index = 1, #page do
+    state.lineIndex = index
+    state:beginLine()
+    state.charIndex = #(state.codes or {})
+    if type(state.shown) == "table" then state.shown[#state.shown] = state.codes end
+  end
+  if state.pageIndex < #state.pages then
+    state.waiting = true
+    state.preWait = 0
+    state.contAdvance = false
+  else
+    state.done = true
+  end
+end
+
+local function starterPreview()
+  local ok, Oak = pcall(require, "mods.Kanto-Reforged.world.oak_intro")
+  if not ok or type(Oak) ~= "table" then return nil end
+  local preview = Oak.preview
+  if type(preview) ~= "table" or not tonumber(preview.speciesId) then return nil end
+  return preview
+end
+
+local function drawStarterPreview(game, theme, vw, vh, viewport)
+  local preview = starterPreview()
+  if not preview then return end
+  theme = theme or Theme.get()
+  local gx, gy, gw, gh = 0, 0, vw or 800, vh or 600
+  if type(viewport) == "table" and viewport.gameWidth and viewport.gameHeight then
+    gx = viewport.gameX or 0
+    gy = viewport.gameY or 0
+    gw = viewport.gameWidth
+    gh = viewport.gameHeight
+  end
+  local cardW = math.min(168, math.floor(gw * 0.42))
+  local cardH = math.min(188, math.floor(gh * 0.46))
+  local x = gx + (gw - cardW) / 2
+  local y = gy + (gh - cardH) / 2
+  Layout.drawCard(x, y, cardW, cardH, {
+    color = theme.surfaceHigh,
+    borderColor = theme.borderStrong,
+    borderWidth = 1,
+    radius = theme.metrics and theme.metrics.radius.dialogue or 12,
+  })
+  local data = game and game.data
+  SpriteHelper.drawFrontPic(data, preview.speciesId, x + 16, y + 12, cardW - 32, cardH - 52, {
+    kind = "summary",
+  })
+  Layout.drawText(tostring(preview.name or "POKéMON"), x + 8, y + cardH - 32, {
+    font = "button",
+    color = theme.heading,
+    bold = true,
+    width = cardW - 16,
+    align = "center",
+  })
+end
 
 function DialogueRenderer.draw(game, state, vw, vh, theme, subState, viewport)
   if not state then return end
   theme = theme or Theme.get()
 
   local ctx = Layout.getContext(vw, vh, viewport)
+  drawStarterPreview(game, theme, vw, vh, viewport)
 
   local dConf = (theme.layout and theme.layout.dialogue) or {
     maxWidth = 740,
@@ -36,6 +155,7 @@ function DialogueRenderer.draw(game, state, vw, vh, theme, subState, viewport)
   elseif game and game.player and game.player.y and tonumber(game.player.y) and (tonumber(game.player.y) >= 9) then
     isTopAnchor = true
   end
+  if starterPreview() then isTopAnchor = false end
 
   local dy
   if isTopAnchor then
@@ -44,7 +164,20 @@ function DialogueRenderer.draw(game, state, vw, vh, theme, subState, viewport)
     dy = ctx.isPortrait and math.min(vh - dh - 160, math.floor(vh * 0.44)) or (vh - dh - marginBottom)
   end
 
+  -- Game3 Choice used as the primary overlay state (message already closed)
+  -- has no pages — skip the empty speech card / "A Close" prompt.
+  local choicePrimary = (state.kind == "yesno" or state.kind == "multi")
+      or (state.active == true and state.options ~= nil)
+  local hasMessageBody = (state._pages and state._pages[state._page or 1] ~= nil)
+      or (state.pages and #(state.pages) > 0)
+      or (state.lines and state.lines[1] ~= nil)
+      or (type(state.text) == "string" and state.text ~= "")
+  local skipDialogueFrame = choicePrimary and not hasMessageBody
+  local choiceOwned = choicePrimary
+      or (subState and subState ~= state and (subState.options ~= nil or subState.kind == "yesno" or subState.kind == "multi"))
+
   -- Main Dialogue Window Card
+  if not skipDialogueFrame then
   Layout.drawCard(dx, dy, dw, dh, {
     color = theme.surfaceHigh,
     borderColor = theme.borderStrong,
@@ -79,7 +212,7 @@ function DialogueRenderer.draw(game, state, vw, vh, theme, subState, viewport)
     local l1, l2 = "", ""
     for _, w in ipairs(words) do
       local test = (l1 == "") and w or (l1 .. " " .. w)
-      if #test <= maxCols and l2 == "" then
+      if DialogueRenderer.utf8Len(test) <= maxCols and l2 == "" then
         l1 = test
       else
         l2 = (l2 == "") and w or (l2 .. " " .. w)
@@ -112,11 +245,11 @@ function DialogueRenderer.draw(game, state, vw, vh, theme, subState, viewport)
     if isFastForward then
       state._suppressTypewriterSfx = true
       state._speedUp = true
+      DialogueRenderer.finishInstantReveal(state)
     end
 
-    local totalChars = #cleanStr
-    local revealedCount = (isFastForward or state._waiting) and totalChars or math.min(totalChars, state._revealed or totalChars)
-    local visibleText = cleanStr:sub(1, revealedCount)
+    local printerDone = isFastForward or state._waiting or (state.printer and state.printer.active == false)
+    local visibleText = revealedSlice(cleanStr, state._revealed, printerDone)
 
     line1Text, line2Text = wrapTwoLines(visibleText, maxCols)
 
@@ -154,13 +287,11 @@ function DialogueRenderer.draw(game, state, vw, vh, theme, subState, viewport)
       end
     end
 
-    local isFastForward = (game and game.logicSpeed and type(game.logicSpeed) == "function" and game:logicSpeed() > 1)
-        or (game and game.input and type(game.input.isDown) == "function" and (game.input:isDown("a") or game.input:isDown("b")))
-        or state._speedUp or state.instant
-
-    local totalChars = #cleanStr
-    local revealedCount = (isFastForward or state._waiting) and totalChars or math.min(totalChars, state.revealed or (state.printer and state.printer.revealed) or totalChars)
-    local visibleText = cleanStr:sub(1, revealedCount)
+    local revealed = state.printer and state.printer.revealed
+    if type(revealed) ~= "number" then revealed = state.revealed end
+    local printerDone = state._waiting
+        or (state.printer and (state.printer.active == false or state.printer.state == "clear"))
+    local visibleText = revealedSlice(cleanStr, revealed, printerDone)
 
     line1Text, line2Text = wrapTwoLines(visibleText, maxCols)
 
@@ -194,9 +325,9 @@ function DialogueRenderer.draw(game, state, vw, vh, theme, subState, viewport)
       end
       fullStr = fullStr .. cleanL
       if (state.lineIndex or 1) > lIdx then
-        currentRevealed = currentRevealed + #cleanL
+        currentRevealed = currentRevealed + DialogueRenderer.utf8Len(cleanL)
       elseif (state.lineIndex or 1) == lIdx then
-        local cIdx = math.min(#cleanL, state.charIndex or #cleanL)
+        local cIdx = math.min(DialogueRenderer.utf8Len(cleanL), state.charIndex or DialogueRenderer.utf8Len(cleanL))
         currentRevealed = currentRevealed + cIdx
       end
     end
@@ -206,11 +337,14 @@ function DialogueRenderer.draw(game, state, vw, vh, theme, subState, viewport)
         or state.instant
 
     local isFullyWaiting = (state.waiting and not state.contAdvance) or state.done
+    if isFastForward then
+      DialogueRenderer.finishInstantReveal(state)
+    end
     if isFullyWaiting or isFastForward then
-      currentRevealed = #fullStr
+      currentRevealed = DialogueRenderer.utf8Len(fullStr)
     end
 
-    local visibleText = fullStr:sub(1, currentRevealed)
+    local visibleText = DialogueRenderer.utf8Sub(fullStr, currentRevealed)
     if not speakerName or speakerName == "" then
       local spk, rest = visibleText:match("^([%w%._'%s%-]+):%s*(.*)$")
       if spk and #spk <= 16 then
@@ -293,7 +427,8 @@ function DialogueRenderer.draw(game, state, vw, vh, theme, subState, viewport)
   end
 
   -- 5. Animated Prompt Cursor & Advance Indicator (\p bouncing chevron)
-  local isWaiting = state._waiting or (state.waiting and not state.contAdvance) or (state.done and not state.auto and not state.stay and not state.choice)
+  -- Hide "A Close" while a yes/no or multichoice owns the A button.
+  local isWaiting = (not choiceOwned) and (state._waiting or (state.waiting and not state.contAdvance) or (state.done and not state.auto and not state.stay and not state.choice))
   if isWaiting then
     local now = (love and love.timer and love.timer.getTime and love.timer.getTime()) or os.clock()
     local bounceY = math.floor(math.sin(now * 8) * 3)
@@ -303,6 +438,7 @@ function DialogueRenderer.draw(game, state, vw, vh, theme, subState, viewport)
     local indLabel = isNext and "Next" or "Close"
 
     Layout.drawButtonHint(dx + dw - 110, dy + dh - (ctx.isUltraCompact and 26 or 32) + bounceY, "A", indLabel, { primary = true })
+  end
   end
 
   -- 6. Choice SubState / Modal (Synchronized Anchor Inversion & Multi-Column Support)
@@ -359,6 +495,9 @@ function DialogueRenderer.draw(game, state, vw, vh, theme, subState, viewport)
         break
       end
     end
+  end
+  if not choiceState and choicePrimary then
+    choiceState = state
   end
 
   if choiceState and (choiceState.options or choiceState.labels or choiceState.choices or choiceState.items or choiceState.onChoose or choiceState.isChoiceBox) then
@@ -492,10 +631,39 @@ function DialogueRenderer.draw(game, state, vw, vh, theme, subState, viewport)
     end
 
     local numChoices = #labels
+    local firstLabel = labels[1] and tostring(labels[1]):upper() or ""
+    -- FRLG Oak speech name list (pokefirered oak_speech.c:2117): 12x10 at (2,2).
+    local isNameList = (not choiceState.isGender) and (
+      choiceState.isNamePick == true
+      or choiceState.kind == "names"
+      or (firstLabel:find("NEW NAME", 1, true) and numChoices >= 3)
+    )
     local maxVisibleRows = math.min(6, math.ceil(numChoices / cols))
     local itemH = (ctx.isUltraCompact) and 28 or 34
     local itemGap = 4
     local pad = 10
+    local cx, cy, cw, ch
+
+    if isNameList then
+      local gameW = math.min(vw, math.floor(vh * (240 / 160)))
+      local gameH = math.min(vh, math.floor(vw * (160 / 240)))
+      local gx = math.floor((vw - gameW) / 2)
+      local gy = math.floor((vh - gameH) / 2)
+      local tile = (gameW / 240) * 8
+      local left = tonumber(choiceState.left or choiceState.tx) or 2
+      local top = tonumber(choiceState.top or choiceState.ty) or 2
+      local tw = tonumber(choiceState.width or choiceState.tw or choiceState.boxWidth) or 12
+      local th = tonumber(choiceState.height or choiceState.th or choiceState.boxHeight) or 10
+      cols = 1
+      cx = math.floor(gx + left * tile)
+      cy = math.floor(gy + top * tile)
+      cw = math.max(1, math.floor(tw * tile))
+      ch = math.max(1, math.floor(th * tile))
+      pad = math.max(6, math.floor(ch * 0.06))
+      itemGap = math.max(2, math.floor(ch * 0.03))
+      maxVisibleRows = numChoices
+      itemH = math.max(18, math.floor((ch - pad * 2 - itemGap * math.max(0, numChoices - 1)) / math.max(1, numChoices)))
+    end
 
     -- Dynamic auto-scrolling slice when #choices > 6
     local totalRows = math.ceil(numChoices / cols)
@@ -509,24 +677,25 @@ function DialogueRenderer.draw(game, state, vw, vh, theme, subState, viewport)
     scrollOffset = math.max(0, math.min(totalRows - maxVisibleRows, scrollOffset))
     choiceState._scrollOffset = scrollOffset
 
-    local maxTextW = 90
-    for _, lbl in ipairs(labels) do
-      maxTextW = math.max(maxTextW, Layout.textWidth(tostring(lbl):upper(), "button") + 32)
-    end
+    if not isNameList then
+      local maxTextW = 90
+      for _, lbl in ipairs(labels) do
+        maxTextW = math.max(maxTextW, Layout.textWidth(tostring(lbl):upper(), "button") + 32)
+      end
 
-    local colW = math.max(110, maxTextW)
-    local cw = math.min(dw - 24, colW * cols + (cols - 1) * 8 + pad * 2)
-    local ch = pad * 2 + maxVisibleRows * itemH + (maxVisibleRows - 1) * itemGap
-    local isLeft = (choiceState.anchor == "left") or (choiceState.tx and choiceState.tx <= 5)
-    local cx = isLeft and (dx + 16) or (dx + dw - cw)
+      local colW = math.max(110, maxTextW)
+      cw = math.min(dw - 24, colW * cols + (cols - 1) * 8 + pad * 2)
+      ch = pad * 2 + maxVisibleRows * itemH + (maxVisibleRows - 1) * itemGap
+      local isLeft = (choiceState.anchor == "left") or (choiceState.tx and choiceState.tx <= 5)
+      cx = isLeft and (dx + 16) or (dx + dw - cw)
 
-    -- Synchronized Anchor Inversion:
-    -- If dialogue is top-anchored, dock choice box below speech card; otherwise dock above speech card
-    local cy
-    if isTopAnchor then
-      cy = dy + dh + 10
-    else
-      cy = dy - ch - 12
+      -- Synchronized Anchor Inversion:
+      -- If dialogue is top-anchored, dock choice box below speech card; otherwise dock above speech card
+      if isTopAnchor then
+        cy = dy + dh + 10
+      else
+        cy = dy - ch - 12
+      end
     end
 
     Layout.drawCard(cx, cy, cw, ch, {

@@ -985,7 +985,7 @@ local function gen3BattlerName(battler, mon, speciesKey)
   return "POKéMON"
 end
 
-local function fillBattleSlot(slot, battler, data)
+local function fillBattleSlot(slot, battler, data, side)
   local mon = battler and (battler.mon or battler.pokemon)
   if not mon then
     slot.active = false
@@ -998,8 +998,22 @@ local function fillBattleSlot(slot, battler, data)
   slot.name = gen3BattlerName(battler, mon, (def and def.name) or speciesKey)
   slot.level = mon.level or 1
   slot.maxHp = battler.maxHP or (mon.stats and mon.stats.hp) or mon.maxHp or mon.hp or 1
-  slot.shownHp = math.max(0, math.floor(battler.shownHP or mon.hp or 0))
   slot.hp = mon.hp or 0
+  local shown = battler.shownHP
+  local Anim = package.loaded["src.core.game3.battle.anim"]
+  local sideKey = side or battler.side or battler.id
+  if Anim and Anim.displayHpRatio and sideKey then
+    local present = Anim.present and Anim.present(sideKey)
+    if present and present.displayHp ~= nil then
+      local ratio, hp, maxHp = Anim.displayHpRatio(sideKey, battler)
+      if hp ~= nil then
+        shown = hp
+        if maxHp and maxHp > 0 then slot.maxHp = maxHp end
+        if ratio then slot.hpRatio = ratio end
+      end
+    end
+  end
+  slot.shownHp = math.max(0, tonumber(shown) or tonumber(mon.hp) or 0)
   slot.hpRatio = slot.maxHp > 0 and math.max(0, math.min(1, slot.shownHp / slot.maxHp)) or 0
   slot.status = battler.shownStatus or mon.status
   slot.shownStatus = battler.shownStatus
@@ -1008,6 +1022,36 @@ local function fillBattleSlot(slot, battler, data)
   slot.ability = mon.ability or battler.ability or (def and def.ability)
   slot.heldItem = mon.heldItem or mon.item or battler.item
   slot.exp = mon.exp or 0
+  if Anim and Anim.displayExpRatio and (side == "player" or side == 0 or side == 2) then
+    local expRatio = Anim.displayExpRatio(side, battler)
+    if type(expRatio) == "number" then slot.expRatio = math.max(0, math.min(1, expRatio)) end
+  end
+end
+
+local function partyBallStatus(mon)
+  if not mon then return "empty" end
+  local hp = tonumber(mon.hp) or 0
+  if hp <= 0 then return "fainted" end
+  local status = mon.status or mon.status1
+  if status and status ~= 0 and status ~= "" then return "status" end
+  return "ok"
+end
+
+local function fillPartyBalls(slot, party, count, missingAsOk)
+  if not slot or not slot.partyBalls then return end
+  count = math.max(0, math.min(6, tonumber(count) or (party and #party) or 0))
+  for i = 1, 6 do
+    if i <= count then
+      local mon = party and party[i]
+      if mon then
+        slot.partyBalls[i] = partyBallStatus(mon)
+      else
+        slot.partyBalls[i] = missingAsOk and "ok" or "empty"
+      end
+    else
+      slot.partyBalls[i] = "empty"
+    end
+  end
 end
 
 function Gen3Adapter:updateBattleInfo(outCache)
@@ -1024,19 +1068,30 @@ function Gen3Adapter:updateBattleInfo(outCache)
   -- 1. Sync battlers from the live fight, including double partners.
   local pBattler = battle.player or battle.battler1
   local pMon = pBattler and (pBattler.mon or pBattler.pokemon)
-  fillBattleSlot(cache.player, pBattler, data)
+  fillBattleSlot(cache.player, pBattler, data, "player")
 
   local eBattler = battle.enemy or battle.opponent or battle.battler2
-  fillBattleSlot(cache.enemy, eBattler, data)
+  fillBattleSlot(cache.enemy, eBattler, data, "enemy")
 
   local battlers = battle.battlers
   if battlers then
-    fillBattleSlot(cache.player2, battlers[2], data)
-    fillBattleSlot(cache.enemy2, battlers[3], data)
+    fillBattleSlot(cache.player2, battlers[2], data, 2)
+    fillBattleSlot(cache.enemy2, battlers[3], data, 3)
   else
     cache.player2.active = false
     cache.enemy2.active = false
   end
+
+  local playerParty = battle.playerParty
+  if not playerParty and self.game then
+    local session = self.game.session or self.game.save
+    playerParty = session and (session.party or session.playerParty)
+  end
+  fillPartyBalls(cache.player, playerParty, playerParty and #playerParty, false)
+
+  local foeParty = battle.foeParty
+  local foeCount = tonumber(battle.partySize) or (foeParty and #foeParty) or (cache.enemy.active and 1 or 0)
+  fillPartyBalls(cache.enemy, foeParty, foeCount, true)
 
   -- 3. Double Battle Detection & 2v2 Targets
   cache.isDouble = (battle.double == true or battle.isDouble == true or battle.isDoubleBattle == true or battle.battler3 ~= nil or (battlers and battlers[3] ~= nil))
@@ -1120,6 +1175,24 @@ function Gen3Adapter:updateBattleInfo(outCache)
   cache.selectedMove = (liveFight and Ui and Ui._moveIndex) or battle.menuIndex or 1
   cache.selectedTarget = battle.targetIndex or 1
 
+  -- Native party-ball trays stay until send-out. Hold Omni's battler cards
+  -- until the native healthbox would appear; after that the trays are gone.
+  if liveFight then
+    local function healthboxOut(side)
+      local Anim = package.loaded["src.core.game3.battle.anim"]
+      if not (Anim and Anim.stage) then return false end
+      local ok, stage = pcall(Anim.stage)
+      local boxes = ok and type(stage) == "table" and stage.healthbox
+      local hb = boxes and boxes[side]
+      return type(hb) == "table" and hb.visible == true
+    end
+    cache.enemyMonOut = healthboxOut("enemy") or healthboxOut(1)
+    cache.playerMonOut = healthboxOut("player") or healthboxOut(0)
+  else
+    cache.enemyMonOut = true
+    cache.playerMonOut = true
+  end
+
   return cache
 end
 
@@ -1140,8 +1213,28 @@ function Gen3Adapter:getPcCapacity()
   return 50
 end
 
-function Gen3Adapter:getBoxCapacity()
-  return G3Storage.IN_BOX_COUNT or 30
+function Gen3Adapter:getBoxCapacity(game)
+  local cap = G3Storage.IN_BOX_COUNT or 30
+  local session = (game and game.session) or (not game and self and self.getSession and self:getSession())
+  local storage = session and session.storage
+  local boxes = (game and game.save and game.save.boxes)
+    or (storage and storage.boxes)
+    or (self and self.game and self.game.save and self.game.save.boxes)
+  if boxes then
+    for _, box in pairs(boxes) do
+      local mons = (box and box.mons) or box
+      if type(mons) == "table" then
+        local count = #mons
+        for k in pairs(mons) do
+          if type(k) == "number" and k > count then count = k end
+        end
+        if type(box.count) == "number" and box.count > count then count = box.count end
+        if type(box.capacity) == "number" and box.capacity > count then count = box.capacity end
+        if count > cap then cap = count end
+      end
+    end
+  end
+  return cap
 end
 
 function Gen3Adapter:getCurrentBox()

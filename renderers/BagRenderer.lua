@@ -33,20 +33,38 @@ function BagRenderer.draw(game, state, w, h, theme, subState, animProgress)
   local isGen2Pack = (state.isPackMenu or state.pocketIndex ~= nil or state.pocketItems ~= nil or state.staleRows ~= nil or (type(state.rows) == "table" and not state.party))
   local POCKET_LABELS = {
     items = "ITEMS",
+    medicine = "MEDICINE",
     balls = "BALLS",
     key = "KEY ITEMS",
     tmhm = "TMs & HMs",
     berries = "BERRIES",
     ITEM = "ITEMS",
+    MEDICINE = "MEDICINE",
     BALL = "BALLS",
     KEY_ITEM = "KEY ITEMS",
     TM_HM = "TMs & HMs",
+    BERRY_POUCH = "BERRY POUCH",
+    BERRIES = "BERRIES",
   }
 
   local pockets = nil
-  if isGen2Pack then
+  local PouchMod = package.loaded["src.ui.game3.berry_pouch"]
+  local isBerryPouch = (PouchMod and state == PouchMod)
+    or state._plantMode == true
+    or state.screenId == "berry_pouch"
+    or ((state._location == "berry_tree" or state.location == "berry_tree")
+        and type(state.list) == "function" and not state.POCKET_KEYS)
+  local isPlantMode = state._plantMode == true or state._location == "berry_tree" or state.location == "berry_tree"
+  if isBerryPouch then
+    pockets = {
+      { id = "BERRY_POUCH", label = isPlantMode and "PLANT BERRY" or "BERRY POUCH" },
+    }
+  elseif isGen2Pack then
+    -- Visual tabs include MEDICINE; native PackMenu only has 4 pockets.
+    -- attachBagControls maps visual <-> native and filters ITEM rows.
     pockets = {
       { id = "ITEM", label = "ITEMS" },
+      { id = "MEDICINE", label = "MEDICINE" },
       { id = "BALL", label = "BALLS" },
       { id = "KEY_ITEM", label = "KEY ITEMS" },
       { id = "TM_HM", label = "TMs & HMs" },
@@ -63,12 +81,26 @@ function BagRenderer.draw(game, state, w, h, theme, subState, animProgress)
   else
     pockets = {
       { id = "items", label = "ITEMS" },
+      { id = "medicine", label = "MEDICINE" },
       { id = "balls", label = "BALLS" },
       { id = "key",   label = "KEY ITEMS" },
       { id = "tmhm",  label = "TMs & HMs" },
     }
   end
   local pocketIdx = state.pocketIndex or state.__pocketIndex or state.pocketIdx or 1
+  if isBerryPouch then
+    pocketIdx = 1
+  elseif isGen2Pack then
+    if state.__omniVisualPocket then
+      pocketIdx = state.__omniVisualPocket
+    elseif state.__omniMedicineView and (state.pocketIndex or 1) == 1 then
+      pocketIdx = 2
+    elseif (state.pocketIndex or 1) >= 2 then
+      pocketIdx = (state.pocketIndex or 1) + 1
+    else
+      pocketIdx = state.pocketIndex or 1
+    end
+  end
 
   -- 1. Top Pocket Tab Bar / Header
   Layout.drawCard(0, 0, w, 44, { color = theme.surface, borderColor = theme.border, radius = 8 })
@@ -165,12 +197,12 @@ function BagRenderer.draw(game, state, w, h, theme, subState, animProgress)
   local isGen3Bag = adapter and adapter.generation == 3 and (
     state.POCKET_KEYS ~= nil or type(state.list) == "function" or type(state.currentPocket) == "function"
   )
-  if isGen3Bag then
+  do
     local shown = {}
     for i = 1, #items do shown[i] = items[i] end
     local last = shown[#shown]
     local lastLabel = type(last) == "table" and tostring(last.label or last.name or last.id or ""):upper() or ""
-    if not (type(last) == "table" and (last.cancel or lastLabel == "CANCEL")) then
+    if not (type(last) == "table" and (last.cancel or lastLabel == "CANCEL" or lastLabel == "BACK")) then
       shown[#shown + 1] = { cancel = true, label = "CANCEL" }
     end
     items = shown
@@ -454,20 +486,22 @@ function BagRenderer.draw(game, state, w, h, theme, subState, animProgress)
       or (subState and (subState.isQuantityBox or subState.qty ~= nil or (subState.max ~= nil and subState.unitPrice ~= nil)))
   local isSubChoice = (subState and (subState.isChoiceBox or (subState.labels and subState.onChoose) or subState.choices or (subState.options and subState.active)))
   local isSubAction = isGen2Submenu
-      or (state.mode == "action" and state.ACTIONS ~= nil)
+      or (state.mode == "action" and (state.ACTIONS ~= nil or isBerryPouch))
       or (subState and subState ~= state and subState.items and type(subState.items) == "table" and #subState.items > 0 and not isSubQty and not isSubChoice)
       or (state.optionBox and state.optionBox.items and #state.optionBox.items > 0)
       or (type(state.submenu) == "table" and state.submenu.items and #state.submenu.items > 0)
 
   local isConfirm = isGen2Confirm or isG3TossConfirm
-  local isMessage = isG3DepositDone or (state.mode == "message" and state.message)
+  local isMessage = isG3DepositDone or (state.mode == "message" and (state.message or state.messageText))
 
   if isSubAction then
     local actionMenu = (isGen2Submenu and state.submenu)
         or (subState and subState ~= state and subState.items and subState)
         or state.optionBox
         or state.submenu
-    local actionItems = (state.mode == "action" and state.ACTIONS)
+    local actionItems = (state.mode == "action" and (state.ACTIONS
+          or (isPlantMode and { "PLANT", "CANCEL" })
+          or (isBerryPouch and { "USE", "GIVE", "TOSS", "EXIT" })))
         or (actionMenu and (actionMenu.rows or actionMenu.items))
         or {}
     local actionCur = (state.mode == "action" and state.actionCursor)
@@ -640,7 +674,7 @@ function BagRenderer.draw(game, state, w, h, theme, subState, animProgress)
     love.graphics.setColor(1, 1, 1, 1)
 
     local msg = (state.mode == "deposit_done" and state._depositText)
-      or tostring(state.message or state._msg or "Done.")
+      or tostring(state.message or state.messageText or state._msg or "Done.")
     if type(msg) == "table" then
       msg = table.concat(msg, " ")
     end

@@ -12,12 +12,19 @@ local StatResolver = require("mods.omni_ui.core.StatResolver")
 
 local StorageRenderer = {}
 
-local function drawMonSprite(game, speciesName, x, y, w, h, alpha, isShiny)
+local function drawMonSprite(game, speciesName, x, y, w, h, alpha, isShiny, mon, generation)
   if not speciesName then return end
+  -- Gen 3 PC is icon sheets; Gen 1/2 Bill's PC uses the species front pic.
+  local gen = tonumber(generation)
+    or tonumber(game and game.generation)
+    or tonumber(game and game.save and game.save.generation)
+  local kind = (gen == 3) and "icon" or "box"
   SpriteHelper.drawFrontPic(game.data, speciesName, x, y, w, h, {
     alpha = alpha or 1.0,
-    isShiny = isShiny or false,
-    kind = "summary",
+    isShiny = isShiny or (mon and mon.isShiny) or false,
+    kind = kind,
+    mon = mon,
+    generation = gen,
   })
 end
 
@@ -32,6 +39,9 @@ function StorageRenderer.draw(game, state, w, h, theme, subState, animProgress)
 
   local ctrl = state.__storageController
   local adapter = ctrl.adapter
+  local storageGen = tonumber(adapter and adapter.generation)
+    or tonumber(game and game.generation)
+    or tonumber(game and game.save and game.save.generation)
   local boxMons = ctrl.boxMons or {}
   local partyMons = ctrl.partyMons or {}
   local capacity = ctrl.boxCapacity or 20
@@ -92,7 +102,7 @@ function StorageRenderer.draw(game, state, w, h, theme, subState, animProgress)
     if selMon then
       local isEgg = selMon.isEgg
       local selSpecies = isEgg and "EGG" or (selMon.speciesId or selMon.species or selMon.displayName)
-      drawMonSprite(game, selSpecies, 10, 56, boxW - 4, boxH - 4, 1.0, selMon.isShiny)
+      drawMonSprite(game, selSpecies, 10, 56, boxW - 4, boxH - 4, 1.0, selMon.isShiny, selMon, storageGen)
       if selMon.isShiny and not isEgg then
         Layout.drawText("★", 12, 56, { font = "tiny", color = theme.hpYellow, bold = true })
       end
@@ -159,13 +169,25 @@ function StorageRenderer.draw(game, state, w, h, theme, subState, animProgress)
   local gridY = navY + navH + 8
   local cols = 6
   local rows = math.ceil(capacity / cols)
+  local visibleRows = math.min(rows, 5)
   local cellW = math.floor((leftW - 32 - (cols - 1) * 5) / cols)
   local drawerH = isNarrow and 60 or 68
   local drawerY = bodyH + workspaceY - drawerH - 8
   local gridAreaH = drawerY - gridY - 8
-  local cellH = math.floor((gridAreaH - (rows - 1) * 5) / rows)
+  local cellH = math.floor((gridAreaH - (5 - 1) * 5) / 5)
   local pCellW = math.floor((leftW - 32 - 5 * 5) / 6)
   local pCellH = isNarrow and 40 or 44
+
+  -- Compute scroll row so cursor stays visible
+  local curRow = math.floor(((ctrl.boxSlot or 1) - 1) / cols)
+  local scrollRow = ctrl.boxScrollRow or 0
+  if curRow < scrollRow then
+    scrollRow = curRow
+  elseif curRow >= scrollRow + 5 then
+    scrollRow = curRow - 5 + 1
+  end
+  scrollRow = math.max(0, math.min(math.max(0, rows - 5), scrollRow))
+  ctrl.boxScrollRow = scrollRow
 
   local isMoving = (ctrl.mode == "grabbed" and ctrl.grabbed ~= nil)
   local grabbed = ctrl.grabbed
@@ -176,7 +198,7 @@ function StorageRenderer.draw(game, state, w, h, theme, subState, animProgress)
       local r = math.floor((slot - 1) / cols)
       local c = (slot - 1) % cols
       local cx = 16 + c * (cellW + 5)
-      local cy = gridY + r * (cellH + 5)
+      local cy = gridY + (r - scrollRow) * (cellH + 5)
       return cx, cy, cellW, cellH
     elseif zone == "party" then
       local px = 16 + (slot - 1) * (pCellW + 5)
@@ -272,7 +294,7 @@ function StorageRenderer.draw(game, state, w, h, theme, subState, animProgress)
       if mon and not isOrigin then
         local isEgg = mon.isEgg
         local species = isEgg and "EGG" or (mon.speciesId or mon.species or mon.displayName)
-        drawMonSprite(game, species, cx + 2, cy + 1, cw - 4, ch - 14, opacity, mon.isShiny)
+        drawMonSprite(game, species, cx + 2, cy + 1, cw - 4, ch - 14, opacity, mon.isShiny, mon, storageGen)
         if isEgg then
           Layout.drawText("EGG", cx + 3, cy + ch - 13, { font = "tiny", color = isCursor and theme.heading or theme.colors.accent, bold = true })
         else
@@ -293,23 +315,30 @@ function StorageRenderer.draw(game, state, w, h, theme, subState, animProgress)
   -- Grid rendering with sliding transition
   local gridClipH = drawerY - gridY - 4
   local canStencil = love and love.graphics and love.graphics.stencil and love.graphics.setStencilTest
+  if canStencil then
+    love.graphics.stencil(function()
+      love.graphics.rectangle("fill", 8, gridY - 4, leftW - 16, gridClipH)
+    end, "replace", 1)
+    love.graphics.setStencilTest("greater", 0)
+  end
+
   if isTrans then
     local slideW = leftW - 20
     local fromX = (trans.dir > 0) and (-slideW * t) or (slideW * t)
     local toX = (trans.dir > 0) and (slideW * (1 - t)) or (-slideW * (1 - t))
-    if canStencil then
-      love.graphics.stencil(function()
-        love.graphics.rectangle("fill", 8, gridY - 4, leftW - 16, gridClipH)
-      end, "replace", 1)
-      love.graphics.setStencilTest("greater", 0)
-    end
     drawBoxGrid(trans.fromBoxId, trans.fromMons, fromX, 1.0 - t * 0.7)
     drawBoxGrid(trans.toBoxId, trans.toMons, toX, 0.3 + t * 0.7)
-    if canStencil then
-      love.graphics.setStencilTest()
-    end
   else
     drawBoxGrid(curBoxId, boxMons, 0, 1.0)
+  end
+
+  if canStencil then
+    love.graphics.setStencilTest()
+  end
+
+  -- Scrollbar for box grid when capacity exceeds 5 rows
+  if rows > 5 then
+    Layout.drawScrollBar(leftW - 12, gridY, 4, gridClipH - 8, rows, 5, scrollRow)
   end
 
   -- Docked Party Drawer
@@ -358,7 +387,7 @@ function StorageRenderer.draw(game, state, w, h, theme, subState, animProgress)
 
     if pMon and not isOrigin then
       local species = pMon.speciesId or pMon.species or pMon.displayName
-      drawMonSprite(game, species, px + 2, py + 1, pw - 4, ph - 10)
+      drawMonSprite(game, species, px + 2, py + 1, pw - 4, ph - 10, 1.0, pMon.isShiny, pMon, storageGen)
       local hpR = pMon.maxHp > 0 and math.max(0, math.min(1, pMon.currentHp / pMon.maxHp)) or 0
       local barC = (hpR > 0.5) and theme.hpGreen or ((hpR > 0.2) and theme.hpYellow or theme.hpRed)
       love.graphics.setColor(0, 0, 0, 0.4)
@@ -425,7 +454,7 @@ function StorageRenderer.draw(game, state, w, h, theme, subState, animProgress)
 
     local gMon = grabbed.mon
     local gSpecies = gMon.speciesId or gMon.species or gMon.displayName
-    drawMonSprite(game, gSpecies, 4, 2, drawW - 8, drawH - 16)
+    drawMonSprite(game, gSpecies, 4, 2, drawW - 8, drawH - 16, 1.0, gMon.isShiny, gMon, storageGen)
 
     local lvlStr = ("L%d"):format(gMon.level or 1)
     Layout.drawText(lvlStr, 4, drawH - 14, { font = "tiny", color = theme.heading, bold = true })
@@ -443,7 +472,7 @@ function StorageRenderer.draw(game, state, w, h, theme, subState, animProgress)
       Layout.drawSlot(rightX + 16, 66, rightW - 32, portH, { color = theme.surfaceHigh, borderColor = theme.border, radius = 8 })
       local isEgg = selMon.isEgg
       local selSpecies = isEgg and "EGG" or (selMon.speciesId or selMon.species or selMon.displayName)
-      drawMonSprite(game, selSpecies, rightX + 16, 66, rightW - 32, portH, 1.0, selMon.isShiny)
+      drawMonSprite(game, selSpecies, rightX + 16, 66, rightW - 32, portH, 1.0, selMon.isShiny, selMon, storageGen)
 
       local infoY = 66 + portH + 8
 

@@ -868,11 +868,11 @@ function ModManagerRenderer.draw(game, state, w, h, theme, subState)
           pillKind = "primary"
           local at, total = rawLbl:match("(%d+)[/%s%w]*(%d+)")
           if at and total then
-            displayTitle = "<  LOAD ORDER: POSITION " .. at .. " OF " .. total .. "  >"
+            displayTitle = "◄  LOAD ORDER: POSITION " .. at .. " OF " .. total .. "  ►"
           else
-            displayTitle = "<  " .. rawLbl .. "  >"
+            displayTitle = "◄  " .. rawLbl .. "  ►"
           end
-          rightHint = "< / >: Move in Order"
+          rightHint = "◄ / ►: Move in Order"
         elseif rawLbl:find("BACK") then
           pillText = "‹"
           pillKind = "ghost"
@@ -966,7 +966,9 @@ function ModManagerRenderer.draw(game, state, w, h, theme, subState)
               font = "caption",
             })
           else
-            local displayVal = "< " .. valStr .. " >"
+            -- Layout.cleanText strips GBA tokens matching <...>, so angle
+            -- brackets would wipe the label and collapse this slot to an empty box.
+            local displayVal = "◄ " .. valStr .. " ►"
             local valW = Layout.textWidth(displayVal, "caption") + 24
             local valH = 28
             local valX = math.max(w * 0.45, w - valW - 24)

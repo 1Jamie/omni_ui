@@ -9,7 +9,62 @@ local Assets = require("src.render.Assets")
 
 local SpriteHelper = {}
 
+SpriteHelper.mod = nil
+
+function SpriteHelper.setMod(modHandle)
+  SpriteHelper.mod = modHandle
+end
+
+function SpriteHelper.getG9Exports()
+  local mod = SpriteHelper.mod
+  if not mod then return nil end
+  if type(mod.find) == "function" then
+    local ok, handle = pcall(mod.find, mod, "g9-battle-sprites")
+    if not ok or not handle then
+      ok, handle = pcall(mod.find, "g9-battle-sprites")
+    end
+    if ok and handle and handle.exports then
+      return handle.exports
+    end
+  end
+  if mod.loader and mod.loader.exports and mod.loader.exports["g9-battle-sprites"] then
+    return mod.loader.exports["g9-battle-sprites"]
+  end
+  if mod.exports and mod.exports["g9-battle-sprites"] then
+    return mod.exports["g9-battle-sprites"]
+  end
+  return nil
+end
+
 local imageCache = setmetatable({}, { __mode = "v" })
+
+-- Host cart generation for art policy. Gen 3 PC/party uses 32×64 icon
+-- sheets; Gen 1/2 Bill's PC is supposed to draw the species front pic.
+-- Never infer Gen 3 from `require("src.core.game3.pokemon")` succeeding —
+-- that module is always on disk and will happily resolve "DIGLETT".
+function SpriteHelper.hostGeneration(gameData, opts)
+  opts = opts or {}
+  local gen = tonumber(opts.generation)
+  if gen then return gen end
+  local mon = opts.mon
+  if type(mon) == "table" then
+    gen = tonumber(mon.generation)
+    if gen then return gen end
+  end
+  local data = gameData or {}
+  gen = tonumber(data.generation)
+  if gen then return gen end
+  if data.gen2Palettes or data.gen2Icons or data.gen2MenuGfx then return 2 end
+  local okGV, GV = pcall(require, "src.core.GameVersion")
+  if okGV and GV and type(GV.generation) == "function" then
+    local okG, g = pcall(GV.generation)
+    if okG then
+      gen = tonumber(g)
+      if gen then return gen end
+    end
+  end
+  return nil
+end
 
 function SpriteHelper.getImage(path)
   if not path or path == "" then return nil end
@@ -159,6 +214,45 @@ function SpriteHelper.getMonPalette(gameData, species, isShiny, mon)
   return nil
 end
 
+-- Same lookup PartyMenu uses: icons.bySpecies / def.icon / icons.byDex.
+function SpriteHelper.vanillaIconPath(gameData, species, def)
+  local data = gameData or {}
+  local icons = data.icons
+  local entry = (icons and icons.bySpecies and species and icons.bySpecies[species])
+    or (def and def.icon)
+  local name, path, trueColor
+  if type(entry) == "string" then
+    name = entry
+    path = icons and icons.icons and icons.icons[entry]
+  elseif type(entry) == "table" then
+    path = entry.image
+    trueColor = entry.trueColor and true or false
+  end
+  if not path and def and def.dex and icons and icons.byDex then
+    name = icons.byDex[def.dex]
+    path = name and icons.icons and icons.icons[name]
+  end
+  return path, trueColor, name
+end
+
+local function adoptIconSheet(img, trueColorFlag)
+  if not img then return nil end
+  local iw, ih = 32, 32
+  if img.getDimensions then
+    iw, ih = img:getDimensions()
+  end
+  local cellW, cellH = iw, ih
+  if iw and ih and ih >= (iw * 2) - 2 then
+    cellH = math.floor(ih / math.max(2, math.floor(ih / math.max(iw, 1) + 0.5)))
+  end
+  local quad
+  if cellH and cellH < ih and love and love.graphics and love.graphics.newQuad then
+    local okQ, cropQ = pcall(love.graphics.newQuad, 0, 0, cellW, cellH, iw, ih)
+    if okQ then quad = cropQ end
+  end
+  return img, quad, cellW, cellH, trueColorFlag and true or false
+end
+
 -- Resolve sprite path, image, palette, and trueColor flag
 function SpriteHelper.resolveSprite(gameData, species, side, opts)
   opts = opts or {}
@@ -171,16 +265,20 @@ function SpriteHelper.resolveSprite(gameData, species, side, opts)
 
   -- 1. Resolve path through Sprites.path (invokes Runtime hook 'pokemon.sprite' for external mods)
   local path, trueColor = nil, false
+  local vanillaFront = def and ((side == "back") and def.spriteBack or def.spriteFront) or nil
+  local spriteHooked = false
   if isEgg then
-    path = (data.gen2MenuGfx and data.gen2MenuGfx.egg) or (def and (side == "back" and def.spriteBack or def.spriteFront))
+    path = (data.gen2MenuGfx and data.gen2MenuGfx.egg) or vanillaFront
   else
     path, trueColor = Sprites.path(data, querySpecies, side, {
       mon = opts.mon,
       kind = opts.kind or "battle",
     })
+    if path and vanillaFront and path ~= vanillaFront then spriteHooked = true end
   end
 
   -- 2. If path is still nil, directly query Runtime hook 'pokemon.sprite'
+  -- (new species with no def still get a chance to supply art)
   if not path and not isEgg then
     local Runtime = require("src.mods.Runtime")
     if Runtime and Runtime.wantsHook and Runtime.wantsHook("pokemon.sprite") then
@@ -196,6 +294,7 @@ function SpriteHelper.resolveSprite(gameData, species, side, opts)
       if type(hooked) == "string" and hooked ~= "" then
         path = hooked
         trueColor = ctx.trueColor and true or false
+        spriteHooked = true
       end
     end
   end
@@ -233,29 +332,86 @@ function SpriteHelper.resolveSprite(gameData, species, side, opts)
     end
   end
 
-  local img = path and SpriteHelper.getImage(path) or nil
   local isShiny = opts.isShiny or (opts.mon and opts.mon.isShiny) or false
+  local img, quad, entryW, entryH = nil, nil, nil, nil
+  local gen = SpriteHelper.hostGeneration(data, opts)
+  local isGen3 = gen == 3
+  local wantIcon = opts.kind == "party" or opts.kind == "icon"
 
-  -- If sprite not found via asset paths, query Gen 3 engine if active
-  if not img and not isEgg then
+  -- Live pokemon.icon / icons.bySpecies seam. Gen 3 party and PC use this;
+  -- a replacement here must win over g9 convenience exports.
+  local iconHooked = false
+  if isGen3 and wantIcon and side == "front" then
+    local vanillaIcon, iconTC, iconName = SpriteHelper.vanillaIconPath(data, querySpecies, def)
+    local iconMon = opts.mon
+    if type(iconMon) ~= "table" then
+      iconMon = { species = querySpecies }
+    end
+    local hookedIcon, hookedTC = Sprites.iconPath(data, iconMon, vanillaIcon, {
+      name = iconName,
+      trueColor = iconTC,
+    })
+    local iconSeamPath = hookedIcon or vanillaIcon
+    if hookedIcon and hookedIcon ~= vanillaIcon then iconHooked = true end
+    if iconSeamPath then
+      local loaded = SpriteHelper.getImage(iconSeamPath)
+      if loaded then
+        img, quad, entryW, entryH, trueColor = adoptIconSheet(loaded, hookedTC or iconTC or true)
+      end
+    end
+  end
+
+  local function applyG9Icon(q, atlas, cell, box)
+    if not (atlas and q) then return false end
+    img = atlas
+    trueColor = true
+    local fullQuad = q.full or q
+    if box and box.w and box.w > 0 and box.h and box.h > 0 and love and love.graphics and love.graphics.newQuad then
+      local qx = fullQuad.x or (fullQuad.getViewport and select(1, fullQuad:getViewport())) or 0
+      local qy = fullQuad.y or (fullQuad.getViewport and select(2, fullQuad:getViewport())) or 0
+      local aw, ah = atlas.getDimensions and atlas:getDimensions() or 2048, 2048
+      local okQ, cropQ = pcall(love.graphics.newQuad, qx + box.x, qy + box.y, box.w, box.h, aw, ah)
+      if okQ and cropQ then
+        quad = cropQ
+        entryW, entryH = box.w, box.h
+        return true
+      end
+    end
+    quad = fullQuad
+    entryW, entryH = cell or 64, cell or 64
+    return true
+  end
+
+  -- Gen 3 engine. Gen3Compat wrapPics/wrapIcons already raise pokemon.sprite
+  -- and pokemon.icon plus icons.bySpecies, so this is the live seam native
+  -- party/PC uses — not a bypass.
+  if not img and isGen3 and not isEgg then
     local okP, G3Pokemon = pcall(require, "src.core.game3.pokemon")
     if okP and G3Pokemon then
       local spNum = tonumber(querySpecies) or (opts.mon and tonumber(opts.mon.species or opts.mon.speciesId))
       if not spNum and G3Pokemon.speciesFromName then
         spNum = G3Pokemon.speciesFromName(tostring(querySpecies))
       end
+      if not spNum and G3Pokemon.speciesOf and opts.mon then
+        spNum = G3Pokemon.speciesOf(opts.mon)
+      end
       if spNum then
-        local pid = opts.mon and (opts.mon.personality or opts.mon.pid)
+        local engineMon = opts.mon
+        if type(engineMon) == "table" and type(engineMon.raw) == "table" then
+          engineMon = engineMon.raw
+        end
+        local pid = (engineMon and (engineMon.personality or engineMon.pid))
+          or (opts.mon and (opts.mon.personality or opts.mon.pid))
         local picEntry = nil
-        if opts.kind == "party" or opts.kind == "icon" then
-          picEntry = (opts.mon and G3Pokemon.monIcon and G3Pokemon.monIcon(opts.mon))
+        if wantIcon then
+          picEntry = (engineMon and G3Pokemon.monIcon and G3Pokemon.monIcon(engineMon))
             or (G3Pokemon.icon and G3Pokemon.icon(spNum))
-            or (G3Pokemon.frontPic and G3Pokemon.frontPic(spNum, 0, isShiny, pid))
-        else
+        end
+        if not picEntry then
           if side == "back" and G3Pokemon.backPic then
-            picEntry = (opts.mon and G3Pokemon.monBackPic and G3Pokemon.monBackPic(opts.mon)) or G3Pokemon.backPic(spNum, 0, isShiny)
-          elseif G3Pokemon.monFrontPic and opts.mon then
-            picEntry = G3Pokemon.monFrontPic(opts.mon)
+            picEntry = (engineMon and G3Pokemon.monBackPic and G3Pokemon.monBackPic(engineMon)) or G3Pokemon.backPic(spNum, 0, isShiny)
+          elseif G3Pokemon.monFrontPic and engineMon then
+            picEntry = G3Pokemon.monFrontPic(engineMon)
           elseif G3Pokemon.frontPic then
             picEntry = G3Pokemon.frontPic(spNum, 0, isShiny, pid)
           end
@@ -269,6 +425,66 @@ function SpriteHelper.resolveSprite(gameData, species, side, opts)
         end
       end
     end
+  end
+
+  -- g9-battle-sprites publishes in-memory sheets that cannot travel through
+  -- the path-only pokemon.sprite / pokemon.icon hooks. Use them only when
+  -- those hooks (and the Gen 3 engine) did not already supply art.
+  if not img and not iconHooked and not spriteHooked and side == "front" then
+    local g9 = SpriteHelper.getG9Exports and SpriteHelper.getG9Exports()
+    if g9 then
+      local monParam = opts.mon
+      if type(monParam) ~= "table" then
+        monParam = {
+          species = tostring(querySpecies):upper(),
+          shiny = isShiny,
+          isEgg = isEgg,
+        }
+      elseif not monParam.species then
+        monParam = {
+          species = tostring(querySpecies):upper(),
+          shiny = isShiny,
+          isEgg = isEgg or monParam.isEgg,
+          dvs = monParam.dvs,
+          gender = monParam.gender,
+        }
+      end
+
+      if isGen3 and wantIcon then
+        if g9.iconArtHD then
+          applyG9Icon(g9.iconArtHD(monParam))
+        end
+        if not img and g9.iconArt16 then
+          local q, atlas, cell = g9.iconArt16(monParam)
+          if atlas and q then
+            img = atlas
+            quad = q.full or q
+            entryW, entryH = cell or 16, cell or 16
+            trueColor = true
+          end
+        end
+      elseif g9.frontArt then
+        local fImg, fw, fh = g9.frontArt(monParam)
+        if fImg then
+          img = fImg
+          entryW, entryH = fw, fh
+          trueColor = true
+          local iw, ih
+          if fImg.getDimensions then
+            iw, ih = fImg:getDimensions()
+          end
+          if fw and fh and iw and ih and (iw > fw or ih > fh)
+              and love and love.graphics and love.graphics.newQuad then
+            local okQ, cropQ = pcall(love.graphics.newQuad, 0, 0, fw, fh, iw, ih)
+            if okQ and cropQ then quad = cropQ end
+          end
+        end
+      end
+    end
+  end
+
+  if not img then
+    img = path and SpriteHelper.getImage(path) or nil
   end
 
   local pal = nil
@@ -313,6 +529,27 @@ function SpriteHelper.drawFrontPic(gameData, species, boxX, boxY, boxW, boxH, op
     pw, ph = spriteInfo.w, spriteInfo.h
   else
     pw, ph = img:getDimensions()
+    -- Two-frame Gen 3 / menu icon sheets are stored as W×2H. Drawing the
+    -- whole strip is the "cut and wrapped" box art bug.
+    local cellW = spriteInfo.w or pw
+    local cellH = spriteInfo.h
+    if not quad and pw and ph and ph >= pw * 2 - 2 then
+      cellH = cellH or math.floor(ph / math.max(2, math.floor(ph / pw + 0.5)))
+      if cellH > 0 and cellH < ph and love and love.graphics and love.graphics.newQuad then
+        local okQ, cropQ = pcall(love.graphics.newQuad, 0, 0, math.min(cellW, pw), cellH, pw, ph)
+        if okQ and cropQ then
+          quad = cropQ
+          pw, ph = math.min(cellW, pw), cellH
+        end
+      end
+    elseif not quad and spriteInfo.w and spriteInfo.h and (pw > spriteInfo.w or ph > spriteInfo.h)
+        and love and love.graphics and love.graphics.newQuad then
+      local okQ, cropQ = pcall(love.graphics.newQuad, 0, 0, spriteInfo.w, spriteInfo.h, pw, ph)
+      if okQ and cropQ then
+        quad = cropQ
+        pw, ph = spriteInfo.w, spriteInfo.h
+      end
+    end
   end
   local scaleFactor = opts.scale
   if not scaleFactor then

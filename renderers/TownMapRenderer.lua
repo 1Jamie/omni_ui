@@ -202,7 +202,12 @@ local function frlgWallImage(state)
   local ok, Gpu = pcall(require, "src.ui.game3.region_map_gpu")
   if not (ok and Gpu and Gpu.image) then return nil end
   local names = { [0] = "kanto_map", "sevii123_map", "sevii45_map", "sevii67_map" }
-  local name = names[state.shownRegion or 0] or "kanto_map"
+  local region = state.shownRegion
+  if region == nil and type(state.state) == "function" then
+    local okS, live = pcall(state.state, state)
+    if okS and type(live) == "table" then region = live.selectedRegion end
+  end
+  local name = names[region or 0] or "kanto_map"
   local okI, img = pcall(Gpu.image, name)
   if okI then return img end
   return nil
@@ -448,9 +453,23 @@ function TownMapRenderer.draw(game, state, w, h, theme, subState)
     end
     if state.cursorX == nil then return nil end
     local ok, RegionMap = pcall(require, "src.ui.game3.region_map")
-    if not (ok and RegionMap and RegionMap.cursorPrompt) then return nil end
-    local pOk, card = pcall(RegionMap.cursorPrompt)
-    if not (pOk and type(card) == "table") then return nil end
+    if not (ok and RegionMap and RegionMap.state) then return nil end
+    local pOk, live = pcall(RegionMap.state)
+    if not (pOk and type(live) == "table") then return nil end
+    local kind
+    if RegionMap.cursorX == 21 and RegionMap.cursorY == 13 then
+      kind = "cancel"
+    elseif RegionMap.cursorX == 21 and RegionMap.cursorY == 11
+        and RegionMap.permission and RegionMap.permission("switchButton") then
+      kind = "switch"
+    end
+    local card = {
+      name = live.text and live.text.map or nil,
+      dungeon = live.text and live.text.dungeon or nil,
+      hintKey = live.topBar and live.topBar.right or nil,
+      kind = kind,
+      preview = live.preview and live.preview.text or nil,
+    }
     card.hint = romPlain(card.hintKey)
     return card
   end

@@ -183,6 +183,7 @@ end
 -- 5. v1 Backward-Compatibility Exports
 -- =========================================================================
 PublicApi.registerAdapter = LegacyV1Shim.registerAdapter
+PublicApi.adopt = LegacyV1Shim.adopt
 PublicApi.drawMonDetail = LegacyV1Shim.drawMonDetail
 PublicApi.setPalette = PublicApi.setTheme
 

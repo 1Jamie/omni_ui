@@ -119,15 +119,20 @@ function StorageController:handleBrowseInput(input, isGrabbed)
       else
         self.boxSlot = self.boxSlot - 1
       end
+      self.boxSlot = math.max(1, math.min(self.boxCapacity, self.boxSlot))
       moved = true
     elseif input:wasPressed("right") then
-      if self.boxSlot % cols == 0 then
-        -- Wrap or cycle box
+      -- Partial last rows (expanded boxes) end mid-row; treat the last slot
+      -- like a row edge so we never land past capacity.
+      if self.boxSlot % cols == 0 or self.boxSlot >= self.boxCapacity then
         self:cycleBox(1)
-        self.boxSlot = self.boxSlot - (cols - 1)
+        if self.boxSlot % cols == 0 then
+          self.boxSlot = self.boxSlot - (cols - 1)
+        end
       else
         self.boxSlot = self.boxSlot + 1
       end
+      self.boxSlot = math.max(1, math.min(self.boxCapacity, self.boxSlot))
       moved = true
     elseif input:wasPressed("up") then
       if self.boxSlot <= cols then
@@ -135,6 +140,7 @@ function StorageController:handleBrowseInput(input, isGrabbed)
       else
         self.boxSlot = self.boxSlot - cols
       end
+      self.boxSlot = math.max(1, math.min(self.boxCapacity, self.boxSlot))
       moved = true
     elseif input:wasPressed("down") then
       if self.boxSlot + cols > self.boxCapacity then
@@ -143,6 +149,9 @@ function StorageController:handleBrowseInput(input, isGrabbed)
         self.partySlot = partyCol
       else
         self.boxSlot = self.boxSlot + cols
+      end
+      if self.zone == "box" then
+        self.boxSlot = math.max(1, math.min(self.boxCapacity, self.boxSlot))
       end
       moved = true
     end
@@ -167,7 +176,8 @@ function StorageController:handleBrowseInput(input, isGrabbed)
       return true
     elseif input:wasPressed("down") then
       self.zone = "box"
-      self.boxSlot = 1
+      local col = (self.boxSlot and ((self.boxSlot - 1) % cols + 1)) or 1
+      self.boxSlot = math.min(self.boxCapacity, col)
       moved = true
     elseif input:wasPressed("a") then
       self.mode = "switch_box"

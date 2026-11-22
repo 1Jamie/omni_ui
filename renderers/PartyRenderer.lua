@@ -291,7 +291,8 @@ function PartyRenderer.draw(game, state, w, h, theme, subState, animProgress)
       SpriteHelper.drawFrontPic(game.data, spriteSpecies, boxX, boxY, boxW, boxH, {
         mon = mon,
         isShiny = mon.isShiny,
-        kind = "party",
+        kind = (adapter and adapter.generation == 3) and "party" or "box",
+        generation = adapter and adapter.generation,
       })
 
       local contentX = boxX + boxW + 8
@@ -307,6 +308,7 @@ function PartyRenderer.draw(game, state, w, h, theme, subState, animProgress)
 
         -- Top Row Left: Name + Gender
         Layout.drawText(name, contentX, row1Y, { font = "headline", color = nameColor, bold = true })
+        local nameW = Layout.textWidth(name, "headline")
         local isMale = (mon.gender == "M" or mon.gender == "MALE")
         local isFemale = (mon.gender == "F" or mon.gender == "FEMALE")
         if not isEgg and (isMale or isFemale) then

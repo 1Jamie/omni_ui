@@ -297,8 +297,23 @@ function Gen1Adapter:getBoxCount()
   return Boxes.COUNT or 12
 end
 
-function Gen1Adapter:getBoxCapacity()
-  return Boxes.CAPACITY or 20
+function Gen1Adapter:getBoxCapacity(game)
+  local cap = Boxes.CAPACITY or 20
+  local save = (game and game.save) or (self and self.game and self.game.save)
+  if save and save.boxes then
+    for _, box in pairs(save.boxes) do
+      if type(box) == "table" then
+        local count = #box
+        for k in pairs(box) do
+          if type(k) == "number" and k > count then count = k end
+        end
+        if type(box.count) == "number" and box.count > count then count = box.count end
+        if type(box.capacity) == "number" and box.capacity > count then count = box.capacity end
+        if count > cap then cap = count end
+      end
+    end
+  end
+  return cap
 end
 
 function Gen1Adapter:getCurrentBox()

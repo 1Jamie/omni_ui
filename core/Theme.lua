@@ -60,7 +60,7 @@ end
 
 -- Default Base Template
 Theme.BASE = {
-  id = "dark",
+  id = "dark-modern",
   label = "Dark Modern",
   author = "Cartridge Studio",
   version = "2.0.0",
@@ -233,9 +233,22 @@ function Theme.create(def)
   return t
 end
 
+Theme.DEFAULT_ID = "dark-modern"
+local THEME_ALIASES = { dark = "dark-modern" }
+
+function Theme.resolveId(id)
+  if id == nil or id == "" then return Theme.DEFAULT_ID end
+  return THEME_ALIASES[id] or id
+end
+
 -- Extend a theme with declarative overrides or custom draw delegate hooks
 function Theme.extend(baseIdOrTheme, overrides)
-  local base = (type(baseIdOrTheme) == "string") and (Theme.REGISTRY[baseIdOrTheme] or Theme.REGISTRY.dark) or baseIdOrTheme
+  local base
+  if type(baseIdOrTheme) == "string" then
+    base = Theme.REGISTRY[Theme.resolveId(baseIdOrTheme)] or Theme.REGISTRY[baseIdOrTheme] or Theme.REGISTRY[Theme.DEFAULT_ID]
+  else
+    base = baseIdOrTheme
+  end
   local newTheme = deepCopy(base or Theme.BASE)
   if overrides then deepMerge(newTheme, overrides) end
   return Theme.create(newTheme)
@@ -244,9 +257,14 @@ end
 -- Register a theme
 function Theme.register(id, def)
   if not id then return nil end
+  local canonical = Theme.resolveId(id)
   local themeObj = Theme.create(def)
-  themeObj.id = id
+  themeObj.id = canonical
+  Theme.REGISTRY[canonical] = themeObj
   Theme.REGISTRY[id] = themeObj
+  if canonical == Theme.DEFAULT_ID then
+    Theme.REGISTRY.dark = themeObj
+  end
   return themeObj
 end
 
@@ -381,18 +399,19 @@ function Theme.interpolate(themeA, themeB, t)
 end
 
 -- Initialize built-ins
-Theme.register("dark", Theme.BASE)
+Theme.register(Theme.DEFAULT_ID, Theme.BASE)
 Theme.loadThemesDirectory()
 
-Theme.currentThemeId = "dark"
+Theme.currentThemeId = Theme.DEFAULT_ID
 Theme.transition = nil
 
 function Theme.get(id)
-  if id and id ~= Theme.currentThemeId then
-    return Theme.REGISTRY[id] or Theme.REGISTRY.dark
+  if id and Theme.resolveId(id) ~= Theme.resolveId(Theme.currentThemeId) then
+    local resolved = Theme.resolveId(id)
+    return Theme.REGISTRY[resolved] or Theme.REGISTRY[id] or Theme.REGISTRY[Theme.DEFAULT_ID]
   end
 
-  local targetTheme = Theme.REGISTRY[Theme.currentThemeId] or Theme.REGISTRY.dark
+  local targetTheme = Theme.REGISTRY[Theme.resolveId(Theme.currentThemeId)] or Theme.REGISTRY[Theme.DEFAULT_ID]
   if not Theme.transition then
     return targetTheme
   end
@@ -413,6 +432,7 @@ function Theme.get(id)
 end
 
 function Theme.setTheme(id, duration)
+  id = Theme.resolveId(id)
   if not id or not Theme.REGISTRY[id] then return end
 
   local isInteractive = (love and love.window and love.window.isOpen and love.window.isOpen())
@@ -455,27 +475,35 @@ Theme.PALETTES = Theme.REGISTRY
 function Theme.list()
   local list = {}
   local seen = {}
-  local preferred = { "dark", "classic", "emerald", "kanto", "cyber", "catppuccin" }
+  local preferred = { "dark-modern", "classic", "emerald", "kanto", "cyber", "catppuccin" }
   for _, id in ipairs(preferred) do
-    if Theme.REGISTRY[id] then
-      list[#list + 1] = { id = id, label = Theme.REGISTRY[id].label or id }
-      seen[id] = true
+    local resolved = Theme.resolveId(id)
+    if Theme.REGISTRY[resolved] and not seen[resolved] then
+      list[#list + 1] = { id = resolved, label = Theme.REGISTRY[resolved].label or resolved }
+      seen[resolved] = true
     end
   end
   local rest = {}
   for id, v in pairs(Theme.REGISTRY) do
-    if not seen[id] then
+    local resolved = Theme.resolveId(id)
+    if not seen[resolved] and resolved == id then
       rest[#rest + 1] = { id = id, label = v.label or id }
+      seen[id] = true
     end
   end
   table.sort(rest, function(a, b) return a.id < b.id end)
+  for _, item in ipairs(rest) do
+    list[#list + 1] = item
+  end
   return list
 end
 
 function Theme.getThemeNames()
   local names = {}
   for id, _ in pairs(Theme.REGISTRY) do
-    table.insert(names, id)
+    if Theme.resolveId(id) == id then
+      table.insert(names, id)
+    end
   end
   table.sort(names)
   return names
@@ -489,7 +517,7 @@ function Theme.cycleTheme(dir, duration)
   dir = dir or 1
   local list = Theme.list()
   if #list == 0 then return nil end
-  local cur = Theme.currentThemeId or "dark"
+  local cur = Theme.resolveId(Theme.currentThemeId)
   local curIdx = 1
   for i, item in ipairs(list) do
     if item.id == cur then

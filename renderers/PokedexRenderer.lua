@@ -752,7 +752,7 @@ function PokedexRenderer.draw(game, state, w, h, theme, subState, animProgress)
       Layout.drawText(("HT: %s   WT: %s"):format(htStr, wtStr), rx, 130, { font = "tiny", color = theme.textDim })
     else
       Layout.drawText("UNKNOWN SPECIES", 18, 64, { font = "headline", color = theme.textMuted, bold = true })
-      Layout.drawText("Species has not been encountered yet.", 18, 92, { font = "caption", color = theme.textDim })
+      Layout.drawTextWrapped("Species has not been encountered yet.", 18, 92, w - 36, { font = "caption", color = theme.textDim })
     end
 
     -- Bottom Scrollable Full-Width Dex List Card
@@ -1061,7 +1061,7 @@ function PokedexRenderer.draw(game, state, w, h, theme, subState, animProgress)
     else
       Layout.drawText("UNKNOWN SPECIES", rx + 18, 70, { font = "headline", color = theme.textMuted, bold = true })
       Layout.drawSlot(rx + 16, 104, rw - 32, 100, { color = theme.surfaceHigh, borderColor = theme.border, radius = 6 })
-      Layout.drawText("Species has not been encountered yet.\nSearch wild areas and trainer battles to record data.", rx + 28, 126, { font = "caption", color = theme.textDim })
+      Layout.drawTextWrapped("Species has not been encountered yet.\nSearch wild areas and trainer battles to record data.", rx + 28, 126, rw - 56, { font = "caption", color = theme.textDim })
     end
   end
 

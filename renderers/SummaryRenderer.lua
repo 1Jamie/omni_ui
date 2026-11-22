@@ -806,11 +806,22 @@ function SummaryRenderer.draw(game, state, w, h, theme)
           Layout.drawText("CLASS", rx + 24 + statColW * 2, inspY + 7, { font = "tiny", color = theme.textDim, bold = true })
           Layout.drawBadge(rx + 24 + statColW * 2, inspY + 20, category, { kind = catKind, font = "tiny" })
 
-          Layout.drawText("EFFECT", rx + 24 + statColW * 3, inspY + 7, { font = "tiny", color = theme.textDim, bold = true })
-          Layout.drawBadge(rx + 24 + statColW * 3, inspY + 20, effTag, { kind = "good", font = "tiny" })
+          local effW = Layout.textWidth(effTag, "tiny") + 16
+          local availColW = (rw - 48) - statColW * 3
+          if effW <= availColW then
+            Layout.drawText("EFFECT", rx + 24 + statColW * 3, inspY + 7, { font = "tiny", color = theme.textDim, bold = true })
+            Layout.drawBadge(rx + 24 + statColW * 3, inspY + 20, effTag, { kind = "good", font = "tiny" })
 
-          Layout.drawSlot(rx + 22, inspY + 44, rw - 44, 1, { color = theme.border })
-          Layout.drawTextWrapped(descText, rx + 24, inspY + 50, rw - 48, { font = "body", color = theme.text })
+            Layout.drawSlot(rx + 22, inspY + 44, rw - 44, 1, { color = theme.border })
+            Layout.drawTextWrapped(descText, rx + 24, inspY + 50, rw - 48, { font = "body", color = theme.text })
+          else
+            local lblW = Layout.textWidth("EFFECT", "tiny") + 8
+            Layout.drawText("EFFECT", rx + 24, inspY + 42, { font = "tiny", color = theme.textDim, bold = true })
+            Layout.drawBadge(rx + 24 + lblW, inspY + 39, effTag, { kind = "good", font = "tiny" })
+
+            Layout.drawSlot(rx + 22, inspY + 62, rw - 44, 1, { color = theme.border })
+            Layout.drawTextWrapped(descText, rx + 24, inspY + 68, rw - 48, { font = "body", color = theme.text })
+          end
         end
       else
         Layout.drawText("NO MOVE SELECTED", rx + 24, inspY + 18, { font = "caption", color = theme.textMuted, bold = true })
@@ -1195,10 +1206,16 @@ function SummaryRenderer.draw(game, state, w, h, theme)
 
           -- Row 2: Category Badge & Effect Badge
           Layout.drawBadge(16, inspY + 24, category, { kind = catKind, font = "tiny", height = 18 })
-          Layout.drawBadge(16 + halfW, inspY + 24, effTag, { kind = "good", font = "tiny", height = 18 })
-
-          Layout.drawSlot(14, inspY + 46, w - 28, 1, { color = theme.border })
-          Layout.drawTextWrapped(descText, 16, inspY + 52, w - 32, { font = "caption", color = theme.text })
+          local effW = Layout.textWidth(effTag, "tiny") + 16
+          if 16 + halfW + effW <= w - 16 then
+            Layout.drawBadge(16 + halfW, inspY + 24, effTag, { kind = "good", font = "tiny", height = 18 })
+            Layout.drawSlot(14, inspY + 46, w - 28, 1, { color = theme.border })
+            Layout.drawTextWrapped(descText, 16, inspY + 52, w - 32, { font = "caption", color = theme.text })
+          else
+            Layout.drawBadge(16, inspY + 46, effTag, { kind = "good", font = "tiny", height = 18 })
+            Layout.drawSlot(14, inspY + 68, w - 28, 1, { color = theme.border })
+            Layout.drawTextWrapped(descText, 16, inspY + 74, w - 32, { font = "caption", color = theme.text })
+          end
         end
       else
         Layout.drawText("No move selected", 16, inspY + 12, { font = "caption", color = theme.textDim })

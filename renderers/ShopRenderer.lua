@@ -13,12 +13,43 @@ local ROOT_DESC = {
   quit = "Leave the counter.",
 }
 
+local function isGen1ClerkRoot(state)
+  local items = state and state.items
+  if type(items) ~= "table" or #items < 2 then return false end
+  local first = items[1]
+  if type(first) ~= "table" or first.price or first.value then return false end
+  local label = tostring(first.label or first.name or ""):upper()
+  return label == "BUY" or label:find("BUY", 1, true) ~= nil
+end
+
 local function shopPhase(state)
+  -- Gen 2 MartMenu owns the clerk loop through `phase`.
+  local p = state and state.phase
+  if p == "top" then return "root" end
+  if p == "buy" then return "buy" end
+  if p == "buyQuantity" or p == "sellQuantity" then return "qty" end
+  if p == "sell" then return "sell" end
+  if p == "intro" or p == "outro" then return "msg" end
+  if state and state.confirm then return "confirm" end
+  if isGen1ClerkRoot(state) then return "root" end
+
   local st = state and state.state
   if st == "root" or st == "list" or st == "msg" or st == "qty" or st == "confirm" or st == "sell" then
     return st
   end
   return (state and state.mode) or "buy"
+end
+
+local function gen2RootRows(state)
+  local rows = {
+    { id = "buy", label = "BUY", name = "BUY", choice = true, description = ROOT_DESC.buy },
+  }
+  -- Only STANDARD marts sell from the top menu.
+  if not state.martType or state.martType == "STANDARD" then
+    rows[#rows + 1] = { id = "sell", label = "SELL", name = "SELL", choice = true, description = ROOT_DESC.sell }
+  end
+  rows[#rows + 1] = { id = "quit", label = "QUIT", name = "QUIT", choice = true, description = ROOT_DESC.quit }
+  return rows
 end
 
 function ShopRenderer.clerkPages(raw)
@@ -261,7 +292,8 @@ function ShopRenderer.draw(game, state, w, h, theme, subState)
   local adapter = AdapterResolver.resolve(game)
   local playerInfo = adapter:getPlayerInfo()
 
-  local items = state.items or state.rows or state._items or {}
+  -- Gen 2 stores the shelf on `entries`. Gen 1 and Gen 3 use `items` / `rows`.
+  local items = state.entries or state.items or state.rows or state._items or {}
   local hoennList = windowCursor(state)
   local curIdx = hoennList and ((state.scroll or 0) + (state.row or 0) + 1) or (state.index or state.cursor or 1)
   local scroll = state.scroll or 0
@@ -269,13 +301,19 @@ function ShopRenderer.draw(game, state, w, h, theme, subState)
   local mode = state.mode or "buy"
   local qty = state.qty or 1
   local yesNoCursor = state.yesNoCursor or state.yesCursor or 1
+  if state.confirm and state.confirm.choice then
+    yesNoCursor = state.confirm.choice
+  end
   local phase = shopPhase(state)
   syncClerkPage(state)
 
   -- Money amount
   local money = playerInfo.money
   if state.money and type(state.money) == "function" then
-    local ok, m = pcall(state.money)
+    local ok, m = pcall(state.money, state)
+    if ok and m then money = m end
+  elseif type(state.money) == "function" then
+    local ok, m = pcall(state.money, state)
     if ok and m then money = m end
   elseif state._session and state._session.money then
     money = state._session.money
@@ -290,12 +328,34 @@ function ShopRenderer.draw(game, state, w, h, theme, subState)
   Layout.drawBadge(w - (isNarrow and 120 or 180), 12, isNarrow and ("¥%d"):format(money) or ("FUNDS: ¥%d"):format(money), { kind = "good" })
 
   if phase == "root" then
-    items = rootRows(state)
-    curIdx = state.cursor or state.index or 1
+    if state.phase == "top" then
+      items = gen2RootRows(state)
+      curIdx = state.topIndex or 1
+    elseif isGen1ClerkRoot(state) then
+      items = state.items
+      curIdx = state.index or state.cursor or 1
+    else
+      items = rootRows(state)
+      curIdx = state.cursor or state.index or 1
+    end
     scroll = 0
   end
 
   if phase == "buy_msg" or phase == "msg" then
+    -- Gen 2 intro/outro pages live on Typer's message table.
+    if state.message and state.message.pages and not state._status then
+      local page = state.message.page or 1
+      local lines = state.message.pages[page] or state.message.pages[1] or {}
+      local text = type(lines) == "table" and table.concat(lines, "\n") or tostring(lines)
+      local DialogueRenderer = require("mods.omni_ui.renderers.DialogueRenderer")
+      DialogueRenderer.draw(game, {
+        speaker = "CLERK",
+        text = text,
+        waiting = true,
+        instant = true,
+      }, w, h, theme)
+      return
+    end
     drawClerkSpeech(game, state, w, h, theme)
     return
   end

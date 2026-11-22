@@ -258,6 +258,17 @@ function Gen2Adapter:normalizeMon(mon, index)
       or norm.stats.spDefense
       or math.floor(lvl * 1.8 + 5)
   norm.maxHp = (mon.stats and mon.stats.hp) or mon.maxHp or mon.hp or math.floor(lvl * 2.5 + 10)
+  local rawHp = nil
+  if mon.hp ~= nil then rawHp = tonumber(mon.hp) end
+  if rawHp == nil and mon.currentHp ~= nil then rawHp = tonumber(mon.currentHp) end
+  if rawHp ~= nil then
+    norm.currentHp = rawHp
+    norm.hp = rawHp
+  else
+    local fainted = (norm.status == "FAINTED" or norm.status == "FNT")
+    norm.currentHp = fainted and 0 or norm.maxHp
+    norm.hp = norm.currentHp
+  end
 
   -- 7. Gen 2 Field Moves
   norm.fieldMoves = {}
@@ -387,9 +398,11 @@ function Gen2Adapter:getBagPockets()
   local save = self.game and self.game.save or {}
   local data = self.game and self.game.data or {}
   local itemsData = data.items or {}
+  local ItemDatabase = require("mods.omni_ui.core.ItemDatabase")
 
   local pockets = {
     { id = "ITEM", label = "ITEMS", items = {} },
+    { id = "MEDICINE", label = "MEDICINE", items = {} },
     { id = "BALL", label = "POKé BALLS", items = {} },
     { id = "KEY_ITEM", label = "KEY ITEMS", items = {} },
     { id = "TM_HM", label = "TM/HM", items = {} },
@@ -398,14 +411,15 @@ function Gen2Adapter:getBagPockets()
   local pocketMap = {
     ITEM = pockets[1],
     ITEMS = pockets[1],
-    BALL = pockets[2],
-    BALLS = pockets[2],
-    KEY_ITEM = pockets[3],
-    KEY_ITEMS = pockets[3],
-    KEY = pockets[3],
-    TM_HM = pockets[4],
-    TM = pockets[4],
-    TMS = pockets[4],
+    MEDICINE = pockets[2],
+    BALL = pockets[3],
+    BALLS = pockets[3],
+    KEY_ITEM = pockets[4],
+    KEY_ITEMS = pockets[4],
+    KEY = pockets[4],
+    TM_HM = pockets[5],
+    TM = pockets[5],
+    TMS = pockets[5],
   }
 
   -- 1. Scan standard inventory
@@ -415,12 +429,19 @@ function Gen2Adapter:getBagPockets()
     local qty = (type(count) == "table" and count.count) or count
     if type(qty) == "number" and qty > 0 then
       local def = itemsData[id] or {}
-      local pKey = def.pocket or "ITEM"
-      local targetPocket = pocketMap[pKey] or pockets[1]
+      local pKey = def.pocket
+      local targetPocket
+      if pKey and pKey ~= "ITEM" and pKey ~= "ITEMS" and pocketMap[pKey] then
+        targetPocket = pocketMap[pKey]
+      elseif ItemDatabase.isMedicineItem(id, def) then
+        targetPocket = pockets[2]
+      else
+        targetPocket = (pKey and pocketMap[pKey]) or pockets[1]
+      end
 
       if targetPocket.id == "TM_HM" or def.teaches or def.moveId or (def.machine and def.machine.move) then
         local info = self:machineInfo(id, def)
-        pockets[4].items[#pockets[4].items + 1] = {
+        pockets[5].items[#pockets[5].items + 1] = {
           id = id,
           label = (info.tag and info.tag:match("%d")) and (info.tag .. " " .. info.moveName) or info.moveName,
           tmLabel = info.tag,
@@ -454,7 +475,7 @@ function Gen2Adapter:getBagPockets()
     if type(qty) == "number" and qty > 0 then
       local def = itemsData[tmId] or {}
       local info = self:machineInfo(tmId, def)
-      pockets[4].items[#pockets[4].items + 1] = {
+      pockets[5].items[#pockets[5].items + 1] = {
         id = tmId,
         label = (info.tag and info.tag:match("%d")) and (info.tag .. " " .. info.moveName) or info.moveName,
         tmLabel = info.tag,
@@ -915,8 +936,23 @@ function Gen2Adapter:getBoxCount()
   return Gen2Boxes.NUM_BOXES or 14
 end
 
-function Gen2Adapter:getBoxCapacity()
-  return Gen2Boxes.MONS_PER_BOX or 20
+function Gen2Adapter:getBoxCapacity(game)
+  local cap = Gen2Boxes.MONS_PER_BOX or 20
+  local save = (game and game.save) or (self and self.game and self.game.save)
+  if save and save.boxes then
+    for _, box in pairs(save.boxes) do
+      if type(box) == "table" then
+        local count = #box
+        for k in pairs(box) do
+          if type(k) == "number" and k > count then count = k end
+        end
+        if type(box.count) == "number" and box.count > count then count = box.count end
+        if type(box.capacity) == "number" and box.capacity > count then count = box.capacity end
+        if count > cap then cap = count end
+      end
+    end
+  end
+  return cap
 end
 
 function Gen2Adapter:getCurrentBox()

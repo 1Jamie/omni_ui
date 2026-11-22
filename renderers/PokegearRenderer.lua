@@ -407,6 +407,10 @@ local function extractCallMessage(dialogState, game)
         or (game and game.input and type(game.input.isDown) == "function" and (game.input:isDown("a") or game.input:isDown("b")))
         or dialogState.instant
 
+    if isFastForward and not isWaiting then
+      local DialogueRenderer = require("mods.omni_ui.renderers.DialogueRenderer")
+      DialogueRenderer.finishInstantReveal(dialogState)
+    end
     if isWaiting or isFastForward then
       currentRevealed = #fullStr
     end

@@ -250,7 +250,12 @@ end
 function Layout.textHeight(fontName, opts)
   local f = Layout.getFont(fontName or "body", opts)
   if f and f.getHeight then
-    return f:getHeight()
+    local h = f:getHeight()
+    if f.getDescent then
+      local d = f:getDescent()
+      if d and d > 0 then h = h + math.ceil(d) end
+    end
+    return math.ceil(h)
   end
   return 12
 end
@@ -393,9 +398,12 @@ function Layout.drawText(text, x, y, opts)
       posX = x + math.max(0, w - tw)
     end
 
-    pcall(love.graphics.print, text, posX, y)
+    local px = math.floor(posX + 0.5)
+    local py = math.floor(y + 0.5)
+
+    pcall(love.graphics.print, text, px, py)
     if isBold then
-      pcall(love.graphics.print, text, posX + 1, y)
+      pcall(love.graphics.print, text, px + 1, py)
     end
   else
     local tw = #text * 8
@@ -411,7 +419,9 @@ function Layout.drawText(text, x, y, opts)
     elseif align == "right" and w > 0 then
       posX = x + math.max(0, w - tw)
     end
-    RetroFont.draw(text, posX, y)
+    local px = math.floor(posX + 0.5)
+    local py = math.floor(y + 0.5)
+    RetroFont.draw(text, px, py)
   end
 end
 
@@ -425,12 +435,16 @@ function Layout.drawTextWrapped(text, x, y, wrapLimit, opts)
 
   love.graphics.setColor(color[1] or 1, color[2] or 1, color[3] or 1, color[4] or 1)
 
+  local px = math.floor(x + 0.5)
+  local py = math.floor(y + 0.5)
+  local limit = wrapLimit and math.floor(wrapLimit + 0.5) or 0
+
   local f = Layout.getFont(fontName)
   if f and love.graphics.setFont and love.graphics.printf then
     love.graphics.setFont(f)
-    pcall(love.graphics.printf, text, x, y, wrapLimit, align)
+    pcall(love.graphics.printf, text, px, py, limit, align)
   else
-    RetroFont.draw(text, x, y)
+    RetroFont.draw(text, px, py)
   end
 end
 

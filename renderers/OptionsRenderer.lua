@@ -2,8 +2,17 @@
 -- Settings list with segmented controls, sliders, and launcher-styled toggles.
 
 local Layout = require("mods.omni_ui.core.Layout")
+local Strings = require("src.core.Strings")
 
 local OptionsRenderer = {}
+
+local function tr(str)
+  if str == nil then return "" end
+  if type(str) ~= "string" and type(str) ~= "number" then return tostring(str) end
+  local ok, res = pcall(Strings, str)
+  if ok and res ~= nil then return tostring(res) end
+  return tostring(str)
+end
 
 local function gen3OptionPage(state)
   if type(state) ~= "table" then return nil end
@@ -50,7 +59,8 @@ function OptionsRenderer.draw(game, state, w, h, theme, animProgress)
   if page then absorbOptionRows(game, state, page) end
   local rowCtx = optionRowCtx(state, game)
   local isSub = state.sub == true or (page and page.top == nil and page ~= ((state._pages and state._pages[1]) or (state._st and state._st.pages and state._st.pages[1])))
-  local title = isSub and (state.title or (page and page.title) or "SUB-OPTIONS") or ((page and page.title) or "GAME SETTINGS")
+  local rawTitle = isSub and (state.title or (page and page.title) or "SUB-OPTIONS") or ((page and page.title) or "GAME SETTINGS")
+  local title = tr(rawTitle)
   local ctx = Layout.getContext(w, h)
   local isNarrow = (w < 540) or ctx.isPortrait
 
@@ -58,7 +68,7 @@ function OptionsRenderer.draw(game, state, w, h, theme, animProgress)
   Layout.drawCard(0, 0, w, 44, { color = theme.surface, borderColor = theme.border, radius = 8 })
   Layout.drawText(title, 18, 12, { font = "headline", color = theme.heading, bold = true })
   if w >= 360 then
-    local badgeLabel = isSub and "SUB-MENU" or (isNarrow and "CONFIG" or "CONFIGURATION")
+    local badgeLabel = tr(isSub and "SUB-MENU" or (isNarrow and "CONFIG" or "CONFIGURATION"))
     local bw = Layout.textWidth(badgeLabel, "caption") + 24
     Layout.drawBadge(w - bw - 14, 12, badgeLabel, { kind = "ghost", width = bw })
   end
@@ -140,7 +150,8 @@ function OptionsRenderer.draw(game, state, w, h, theme, animProgress)
       })
     end
 
-    local label = r.label or r.name or "OPTION"
+    local rawLabel = r.label or r.name or "OPTION"
+    local label = tr(rawLabel)
     local fontName = isNarrow and "body" or "button"
     local fh = Layout.textHeight(fontName)
     local labelY = py + math.floor((rowH - fh) / 2)
@@ -185,15 +196,16 @@ function OptionsRenderer.draw(game, state, w, h, theme, animProgress)
     if r.isBack then
       local capFh = Layout.textHeight("caption")
       local backY = py + math.floor((rowH - capFh) / 2)
-      local backW = Layout.textWidth("(Return)", "caption")
-      Layout.drawText("(Return)", contentW - backW - 14, backY, {
+      local retStr = tr("(Return)")
+      local backW = Layout.textWidth(retStr, "caption")
+      Layout.drawText(retStr, contentW - backW - 14, backY, {
         font = "caption",
         color = isSel and theme.heading or theme.textMuted,
       })
     elseif r.group or (r.activate and not r.step and not r.cycle and not r.choices and not r.values and not r.text) then
       -- Group Opener
       local resolvedValue = rowValue(r, rowCtx, game, state)
-      local countStr = resolvedValue or (type(r.value) ~= "function" and r.value) or "VIEW"
+      local countStr = tr(resolvedValue or (type(r.value) ~= "function" and r.value) or "VIEW")
       local badgeText = tostring(countStr) .. " →"
       local bh = 24
       local by = py + math.floor((rowH - bh) / 2)
@@ -246,17 +258,17 @@ function OptionsRenderer.draw(game, state, w, h, theme, animProgress)
 
           local pillLabel = ""
           if r.display and r.display[c] ~= nil then
-            pillLabel = tostring(r.display[c])
+            pillLabel = tr(tostring(r.display[c]))
           elseif c == true then
-            pillLabel = "ON"
+            pillLabel = tr("ON")
           elseif c == false then
-            pillLabel = "OFF"
+            pillLabel = tr("OFF")
           else
-            pillLabel = tostring(c)
+            pillLabel = tr(tostring(c))
           end
           pillLabel = pillLabel:match("^%s*(.-)%s*$") or pillLabel
 
-          Layout.drawButton(pillX, pillY, pillW, pillH, pillLabel:sub(1, 8), {
+          Layout.drawButton(pillX, pillY, pillW, pillH, pillLabel, {
             kind = isChosen and "primary" or "ghost",
             selected = isChosen,
             font = "tiny",
@@ -277,13 +289,13 @@ function OptionsRenderer.draw(game, state, w, h, theme, animProgress)
         local c = choices[chosenIdx] or choices[1]
         local valStr = ""
         if r.display and r.display[c] ~= nil then
-          valStr = tostring(r.display[c])
+          valStr = tr(tostring(r.display[c]))
         elseif c == true then
-          valStr = "ON"
+          valStr = tr("ON")
         elseif c == false then
-          valStr = "OFF"
+          valStr = tr("OFF")
         else
-          valStr = tostring(c or "")
+          valStr = tr(tostring(c or ""))
         end
         valStr = valStr:match("^%s*(.-)%s*$") or valStr
 
@@ -315,31 +327,31 @@ function OptionsRenderer.draw(game, state, w, h, theme, animProgress)
         local ok, res = pcall(r.text, options, 0, game)
         if not ok or res == nil then ok, res = pcall(r.text, options, game) end
         if not ok or res == nil then ok, res = pcall(r.text, options) end
-        if ok and res ~= nil then valStr = tostring(res) end
+        if ok and res ~= nil then valStr = tr(tostring(res)) end
       end
       if valStr == "" then
         local resolved = rowValue(r, rowCtx, game, state)
         if resolved ~= nil then
-          valStr = tostring(resolved)
+          valStr = tr(tostring(resolved))
         elseif r.value ~= nil and type(r.value) ~= "function" then
-          valStr = tostring(r.value)
+          valStr = tr(tostring(r.value))
         end
       end
       if valStr == "" and r.get then
         local ok, res = pcall(r.get, game)
-        if ok and res ~= nil then valStr = tostring(res) end
+        if ok and res ~= nil then valStr = tr(tostring(res)) end
       end
       if valStr == "" and r.frame then
-        valStr = "TYPE " .. tostring(options.frame or 1)
+        valStr = tr("TYPE") .. " " .. tostring(options.frame or 1)
       end
       if valStr == "" and key and options[key] ~= nil then
         local v = options[key]
         if r.display and r.display[v] ~= nil then
-          valStr = tostring(r.display[v])
+          valStr = tr(tostring(r.display[v]))
         elseif type(v) == "boolean" then
-          valStr = v and "ON" or "OFF"
+          valStr = v and tr("ON") or tr("OFF")
         else
-          valStr = tostring(v)
+          valStr = tr(tostring(v))
         end
       end
       valStr = valStr:match("^%s*(.-)%s*$") or valStr
@@ -385,10 +397,10 @@ function OptionsRenderer.draw(game, state, w, h, theme, animProgress)
   -- 3. Bottom Button Hints Footer Bar
   local footY = h - 38
   local hints = {
-    { key = "▲ ▼", label = "Navigate" },
-    { key = "◄ ►", label = "Adjust" },
-    { key = "A", label = "Select", primary = true },
-    { key = "B", label = isSub and "Back" or "Close" },
+    { key = "▲ ▼", label = tr("Navigate") },
+    { key = "◄ ►", label = tr("Adjust") },
+    { key = "A", label = tr("Select"), primary = true },
+    { key = "B", label = isSub and tr("Back") or tr("Close") },
   }
   Layout.drawHintBar(0, footY, w, 36, hints, { paddingX = isNarrow and 8 or 16, gap = isNarrow and 10 or 20 })
 end

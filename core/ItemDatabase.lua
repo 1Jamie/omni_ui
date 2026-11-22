@@ -38,6 +38,72 @@ function ItemDatabase.registerDescriptionProvider(providerFn)
   return false
 end
 
+--- Checks if an item is a healing / medicine item (HP restore, status cure, revival, PP restore).
+--- @param itemId string|number
+--- @param itemDef table|nil
+--- @return boolean
+function ItemDatabase.isMedicineItem(itemId, itemDef)
+  if not itemId then return false end
+  local uId = tostring(itemId):upper()
+
+  -- Status cures
+  if uId == "ANTIDOTE" or uId == "BURN_HEAL" or uId == "ICE_HEAL"
+      or uId == "AWAKENING" or uId == "PARLYZ_HEAL" or uId == "PARALYZ_HEAL"
+      or uId == "FULL_HEAL" or uId == "HEAL_POWDER" or uId == "LAVA_COOKIE"
+      or uId == "PEWTER_CRUNCHIES" or uId == "CASTELIACONE" or uId == "BIG_MALASADA"
+      or uId == "LUM_BERRY" or uId == "CHERI_BERRY" or uId == "CHESTO_BERRY"
+      or uId == "PECHA_BERRY" or uId == "RAWST_BERRY" or uId == "ASPEAR_BERRY"
+      or uId == "PSNCUREBERRY" or uId == "PRZCUREBERRY" or uId == "BURNT_BERRY"
+      or uId == "ICE_BERRY" or uId == "MINT_BERRY" or uId == "MIRACLEBERRY" then
+    return true
+  end
+
+  -- HP restore
+  if uId:find("POTION") or uId == "FULL_RESTORE" or uId == "FRESH_WATER"
+      or uId == "SODA_POP" or uId == "LEMONADE" or uId == "MOOMOO_MILK"
+      or uId == "ENERGYPOWDER" or uId == "ENERGY_ROOT" or uId == "RAGECANDYBAR"
+      or uId == "BERRY_JUICE" or uId == "SWEET_HONEY" or uId == "ORAN_BERRY"
+      or uId == "SITRUS_BERRY" or uId == "GOLD_BERRY" then
+    return true
+  end
+
+  -- Revival
+  if uId:find("REVIVE") or uId == "REVIVAL_HERB" or uId == "SACRED_ASH" then
+    return true
+  end
+
+  -- PP restore
+  if uId:find("ETHER") or uId:find("ELIX") or uId == "MYSTERYBERRY" or uId == "LEPPA_BERRY" then
+    return true
+  end
+
+  -- Engine effects tables if available
+  local okG2, G2Effects = pcall(require, "src.core.gen2.ItemEffects")
+  if okG2 and G2Effects then
+    if (G2Effects.HEAL_HP and G2Effects.HEAL_HP[uId])
+        or (G2Effects.HEAL_STATUS and G2Effects.HEAL_STATUS[uId])
+        or (G2Effects.REVIVE and G2Effects.REVIVE[uId])
+        or (G2Effects.RESTORE_PP and G2Effects.RESTORE_PP[uId]) then
+      return true
+    end
+  end
+
+  local okEffects, Effects = pcall(require, "src.inventory.ItemEffects")
+  if okEffects and Effects then
+    if (Effects.healsHP and Effects.healsHP(uId))
+        or (Effects.isBattleMedicine and Effects.isBattleMedicine(uId)) then
+      return true
+    end
+  end
+
+  if itemDef then
+    if itemDef.healing or itemDef.cure or itemDef.revive or itemDef.restoresPP then return true end
+    if itemDef.pocket == "MEDICINE" or itemDef.pocket == "medicine" or itemDef.category == "Medicine" then return true end
+  end
+
+  return false
+end
+
 local CANONICAL_DESCRIPTIONS = {
   -- Key Items
   TOWN_MAP = "A detailed travel map of the region that can be viewed anytime to check your current location.",

@@ -533,7 +533,8 @@ function TrainerCardRenderer.draw(game, state, w, h, theme, animProgress)
     local textX = frameX + frameW + 14
     Layout.drawText(info.name, textX, 76, { font = "title", color = theme.heading, bold = true })
     local leagueSub = isDualRegion and "KANTO & JOHTO LEAGUES" or (tostring(info.region or "KANTO"):upper() .. " LEAGUE")
-    Layout.drawText(leagueSub, textX, 106, { font = "tiny", color = theme.colors.accent, bold = true })
+    local maxLeagueW = math.max(60, leftW - textX - 8)
+    Layout.drawText(leagueSub, textX, 106, { font = "tiny", color = theme.colors.accent, bold = true, width = maxLeagueW })
 
     local rankTitle = (totalEarned == maxTotalBadges) and "CHAMPION" or (totalEarned >= 8) and "ELITE RANK" or (totalEarned >= 4) and "CHALLENGER" or "ROOKIE"
     local rankKind = (totalEarned == maxTotalBadges) and "gold" or (totalEarned >= 8) and "accent" or "ghost"

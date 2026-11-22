@@ -33,14 +33,27 @@ function BaseAdapter:normalizeMon(mon, index)
   local def = data.pokemon and data.pokemon[speciesId]
   local stats = mon.stats or {}
 
+  local maxHp = tonumber(mon.maxHp) or tonumber(stats.hp) or tonumber(mon.hp) or 1
+  local rawHp = nil
+  if mon.hp ~= nil then rawHp = tonumber(mon.hp) end
+  if rawHp == nil and mon.currentHp ~= nil then rawHp = tonumber(mon.currentHp) end
+  local currentHp
+  if rawHp ~= nil then
+    currentHp = rawHp
+  else
+    local fainted = (mon.status == "FAINTED" or mon.status == "FNT")
+    currentHp = fainted and 0 or maxHp
+  end
+
   return {
     index = index,
     speciesId = speciesId,
     displayName = (def and def.name) or speciesId,
     nickname = mon.nickname or (def and def.name) or speciesId,
     level = mon.level or 1,
-    currentHp = tonumber(mon.hp) or tonumber(mon.currentHp) or 0,
-    maxHp = tonumber(mon.maxHp) or tonumber(stats.hp) or tonumber(mon.hp) or 1,
+    hp = currentHp,
+    currentHp = currentHp,
+    maxHp = maxHp,
     status = mon.status,
     types = (def and def.types) or { "NORMAL" },
     heldItem = mon.heldItem or mon.item,
