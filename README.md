@@ -12,6 +12,24 @@ OmniUI sits on top of the live engine stack. It does not fork menus: it reads th
 - **Battle HUD live state** — HP interpolation, party-ball pips, and status chrome follow engine battle anims instead of snapped snapshots.
 - **Mobile / mouse hit testing** is deferred for a future update. Gamepad and keyboard remain the supported input paths in this beta.
 
+## Screenshots
+
+FireRed, Dark Modern theme. Overworld, menus, and battle HUD sit on the live cart; Omni only redraws the chrome.
+
+| Continue / save card | Pause menu |
+| --- | --- |
+| ![Continue](pictures/continue.png) | ![Start menu](pictures/start-menu.png) |
+
+| Party | Summary |
+| --- | --- |
+| ![Party](pictures/party.png) | ![Summary](pictures/summary.png) |
+
+| Trainer card | Battle command |
+| --- | --- |
+| ![Trainer card](pictures/trainer-card.png) | ![Battle command](pictures/battle-command.png) |
+
+![Battle move select](pictures/battle-moves.png)
+
 ---
 
 ## Theme Directory & Custom Themes
